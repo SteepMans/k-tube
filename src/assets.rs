@@ -16,7 +16,7 @@ impl AssetSource for Assets {
         if path == "brand/logo.svg" {
             return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.svg"))));
         }
-        // Tubeshka: one lavender logo whatever the accent
+        // K-Tube: one lavender logo whatever the accent
         if path.starts_with("brand/logo-") {
             return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.svg"))));
         }

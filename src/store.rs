@@ -338,7 +338,7 @@ pub fn mpv_http_proxy(p: &str) -> bool {
 }
 
 pub fn proxy_setting() -> Option<String> {
-    // Tubeshka: everything goes through the gateway's local proxy unless the user turned the gateway off
+    // K-Tube: everything goes through the gateway's local proxy unless the user turned the gateway off
     if crate::tubeshka::config::get().enabled {
         // never direct: without the local proxy requests fail instead of leaking past the gateway
         return Some(crate::tubeshka::proxy::local_url().unwrap_or_else(|| "http://127.0.0.1:9".into()));
@@ -364,12 +364,24 @@ pub fn data_dir() -> PathBuf {
             return d;
         }
         let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        // Tubeshka: its own profile, apart from an installed Stream Tube
-        let d = base.join("Tubeshka");
-        // carry over data from the app's previous name
-        let old = base.join("Ferrotube");
-        if !d.exists() && old.exists() {
-            let _ = std::fs::rename(&old, &d);
+        // K-Tube: its own profile, apart from an installed Stream Tube
+        let d = base.join("K-Tube");
+        // carry over data (settings, history, the gateway key) from the app's previous names
+        for old in ["Tubeshka", "Ferrotube"] {
+            let old = base.join(old);
+            if !d.exists() && old.exists() {
+                if std::fs::rename(&old, &d).is_err() {
+                    // a file of the old profile is still open: copy it instead
+                    let _ = std::fs::create_dir_all(&d);
+                    if let Ok(rd) = std::fs::read_dir(&old) {
+                        for e in rd.flatten() {
+                            if e.path().is_file() {
+                                let _ = std::fs::copy(e.path(), d.join(e.file_name()));
+                            }
+                        }
+                    }
+                }
+            }
         }
         let _ = std::fs::create_dir_all(&d);
         // A -wal/-shm left without its database belongs to some other copy of it;

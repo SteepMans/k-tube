@@ -1,6 +1,6 @@
 name: Build
 
-# Windows build of Tubeshka on GitHub's free runners (public repository).
+# Windows build of K-Tube on GitHub's free runners (public repository).
 # - pull request: tests and a release build (the gateway address comes from the secret; PRs from forks build without it)
 # - tag v*: the same build with the version from the tag, then a release with the installer and the signed
 #   update-manifest.json (docs/updates.md); a version with "-" (beta) is a pre-release.
@@ -111,7 +111,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tubeshka-windows
+          name: k-tube-windows
           path: dist/*-setup.exe
           if-no-files-found: error
           retention-days: 14
@@ -127,7 +127,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: tubeshka-windows
+          name: k-tube-windows
           path: dist
 
       - name: Sign and publish
@@ -137,7 +137,7 @@ jobs:
           VERSION: ${{ needs.windows.outputs.version }}
         run: |
           set -euo pipefail
-          pkg="Tubeshka-$VERSION-setup.exe"
+          pkg="K-Tube-$VERSION-setup.exe"
           test -f "dist/$pkg"
           keyf=$(mktemp); trap 'rm -f "$keyf" dist/digest.bin' EXIT
           printf '%s\n' "$KEY" > "$keyf"
@@ -158,4 +158,4 @@ jobs:
           case "$VERSION" in *-*) pre=(--prerelease) ;; esac
           printf '%s\n' "$notes" > dist/notes.md
           gh release create "v$VERSION" "dist/$pkg" dist/update-manifest.json --verify-tag "${pre[@]}" \
-            --title "Tubeshka $VERSION" --notes-file dist/notes.md
+            --title "K-Tube $VERSION" --notes-file dist/notes.md

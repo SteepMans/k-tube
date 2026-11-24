@@ -1,4 +1,4 @@
-# Draws the Tubeshka logo (the lavender disc of TGeshka with a white play sign) and writes every icon the app uses:
+# Draws the K-Tube logo (the lavender disc of TGeshka with a white play sign) and writes every icon the app uses:
 # assets/logo.png, assets/streamtube.ico and all assets/accent/* (the icon no longer follows the accent colour).
 # Run: python tools/tubeshka/gen_icons.py   (requires Pillow)
 import glob

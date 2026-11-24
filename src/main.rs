@@ -105,6 +105,7 @@ fn main() {
             .expect("failed to open window");
             perf::mark("window open");
             ui::app_icon::apply(cx);
+            tubeshka::proxy::notices(cx);
             links::register_scheme();
             perf::mark("icon");
             if let Some(mut rx) = incoming {

@@ -138,7 +138,7 @@ impl SettingsPage {
         };
         page.load_sb_stats(cx);
         page.check_tools(cx);
-        // Tubeshka: without a key nothing loads, so the settings open on the gateway
+        // K-Tube: without a key nothing loads, so the settings open on the gateway
         page.section = if crate::tubeshka::config::valid_token(&crate::tubeshka::config::get().token) { Section::General } else { Section::Gateway };
         page
     }

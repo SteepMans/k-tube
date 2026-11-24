@@ -39,6 +39,39 @@ pub fn last_error() -> Option<String> {
     LAST_ERROR.lock().as_ref().filter(|(t, _)| t.elapsed() < Duration::from_secs(120)).map(|(_, e)| e.clone())
 }
 
+/// A refusal the user must see (no exit for YouTube, key not accepted): (serial, text), shown as a toast by
+/// notices(); repeats of the same text are not counted again within a minute.
+static NOTICE: parking_lot::Mutex<(u64, String, Option<std::time::Instant>)> = parking_lot::Mutex::new((0, String::new(), None));
+
+fn notice(text: &str) {
+    let mut n = NOTICE.lock();
+    if n.1 == text && n.2.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+        return;
+    }
+    n.0 += 1;
+    n.1 = text.to_string();
+    n.2 = Some(std::time::Instant::now());
+}
+
+/// Shows the gateway's important refusals as toasts while the app runs.
+pub fn notices(cx: &mut gpui_kit::App) {
+    cx.spawn(async move |cx| {
+        let mut seen = 0u64;
+        loop {
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+            let (serial, text) = {
+                let n = NOTICE.lock();
+                (n.0, n.1.clone())
+            };
+            if serial != seen {
+                seen = serial;
+                let _ = cx.update(|cx| crate::ui::toast(cx, format!("Шлюз TGeshka: {text}")));
+            }
+        }
+    })
+    .detach();
+}
+
 fn set_error(e: String) {
     if crate::perf::on() {
         eprintln!("[gateway] {e}");
@@ -200,8 +233,12 @@ async fn handle(mut c: TcpStream) -> std::io::Result<()> {
                     403 => "403 Forbidden",
                     407 | 404 => "407 Proxy Authentication Required",
                     429 => "429 Too Many Requests",
+                    503 => "503 Service Unavailable",
                     _ => "502 Bad Gateway",
                 };
+                if matches!(e.status, 503 | 404 | 407) {
+                    notice(&e.text);
+                }
                 set_error(format!("{host}: {}", e.text));
                 reply(&mut c, status).await;
                 Ok(())
