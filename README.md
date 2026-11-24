@@ -1,4 +1,25 @@
 <p align="center">
+  <img src="assets/logo.png" alt="K-Tube" width="120">
+</p>
+
+<h1 align="center">K-Tube</h1>
+
+<p align="center">
+  Наш клиент YouTube для Windows: весь трафик идёт через шлюз TGeshka тем же ключом.<br>
+  Основан на <a href="https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop">Stream Tube</a> (Avaneesh Inamdar); это не официальное приложение YouTube.
+</p>
+
+## K-Tube
+
+- Установщик — в [релизах](https://github.com/SteepMans/k-tube/releases); обновления приходят через шлюз и ставятся только с нашей подписью (каналы стабильный и бета).
+- Ключ TGeshka вводится в Настройках, раздел «Шлюз TGeshka». Адрес шлюза встраивается при сборке и в репозитории не хранится.
+- Раз в сутки свежие правки Stream Tube вливаются сами и выходят бетой.
+
+Ниже — описание исходного проекта.
+
+---
+
+<p align="center">
   <img src="assets/logo.png" alt="Stream Tube" width="120">
 </p>
 

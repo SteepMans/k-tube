@@ -1,4 +1,4 @@
-//! Tubeshka: this fork's additions. All network traffic of the app goes through the TGeshka gateway (the same key as
+//! K-Tube: this fork's additions. All network traffic of the app goes through the TGeshka gateway (the same key as
 //! TGeshka): a local HTTP proxy hands every connection to the gateway, which reaches YouTube from abroad.
 //! Protocol: docs/proxy-v1.md in SteepMans/api-gateway.
 pub mod config;
@@ -8,9 +8,9 @@ pub mod ui;
 pub mod update;
 
 /// Shown name of the app.
-pub const APP_NAME: &str = "Tubeshka";
+pub const APP_NAME: &str = "K-Tube";
 /// Our repository (release page, "What's new").
-pub const REPO_URL: &str = "https://github.com/SteepMans/streamtube";
+pub const REPO_URL: &str = "https://github.com/SteepMans/k-tube";
 
 /// Version of this fork (tubeshka-version.txt): updates and the gateway's statistics use it, not the upstream version.
 /// A release build gets its version from the tag (TUBESHKA_VERSION), other builds from the file.

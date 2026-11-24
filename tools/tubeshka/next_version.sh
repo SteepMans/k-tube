@@ -1,8 +1,8 @@
 #!/bin/sh
-# Part of Tubeshka (from TGeshka)
+# Part of K-Tube (from TGeshka)
 #
 #
-# Prints the next Tubeshka version from the v* tags of the repository:
+# Prints the next K-Tube version from the v* tags of the repository:
 #   next_version.sh beta    0.1.2 -> 0.1.3-beta -> 0.1.3-beta.2 -> ...
 #   next_version.sh stable  0.1.3-beta.2 -> 0.1.3 (0.1.2 -> 0.1.3)
 set -eu

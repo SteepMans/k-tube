@@ -28,10 +28,15 @@ fn cell() -> &'static RwLock<Config> {
 }
 
 fn path() -> std::path::PathBuf {
-    crate::store::data_dir().join("tubeshka.json")
+    crate::store::data_dir().join("k-tube.json")
 }
 
 pub fn load() {
+    // the profile of Tubeshka (the previous name) keeps its settings in tubeshka.json
+    let old = crate::store::data_dir().join("tubeshka.json");
+    if !path().exists() && old.exists() {
+        let _ = std::fs::rename(&old, path());
+    }
     if let Ok(s) = std::fs::read_to_string(path()) {
         if let Ok(c) = serde_json::from_str::<Config>(&s) {
             *cell().write() = c;

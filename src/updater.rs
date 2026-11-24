@@ -1,4 +1,4 @@
-//! In-app updates. Tubeshka: from the gateway only (stable or beta channel), the installer signed with our key.
+//! In-app updates. K-Tube: from the gateway only (stable or beta channel), the installer signed with our key.
 use crate::api::http;
 use crate::store;
 use crate::ui::{blocking, toast};
@@ -28,7 +28,7 @@ pub struct Asset {
     pub size: u64,
     /// SHA-256 that GitHub reports for the file (lowercase hex)
     pub sha256: Option<String>,
-    /// Tubeshka: ed25519 signature of the sha256 (base64), from the gateway's manifest
+    /// K-Tube: ed25519 signature of the sha256 (base64), from the gateway's manifest
     pub signature: Option<String>,
 }
 
@@ -143,7 +143,7 @@ pub fn check() -> Result<Option<Release>> {
         page: format!("{RELEASES_PAGE}/tag/v{}", m.version),
         prerelease: m.version.contains('-'),
         asset: cfg!(windows).then(|| Asset {
-            name: format!("Tubeshka-{}-setup.exe", m.version),
+            name: format!("{}-{}-setup.exe", crate::tubeshka::APP_NAME, m.version),
             url: m.path.clone(),
             size: m.size,
             sha256: Some(m.sha256.clone()),
@@ -152,7 +152,7 @@ pub fn check() -> Result<Option<Release>> {
     }))
 }
 
-/// Upstream's check of its GitHub releases (kept for reference; Tubeshka never calls it).
+/// Upstream's check of its GitHub releases (kept for reference; K-Tube never calls it).
 #[allow(dead_code)]
 fn check_github() -> Result<Option<Release>> {
     let v = http::get_json(&format!("https://api.github.com/repos/{REPO}/releases?per_page=15"))?;
@@ -260,12 +260,12 @@ pub fn install(cx: &mut App) {
     let r2 = result.clone();
     std::thread::spawn(move || {
         let res = (|| -> Result<std::path::PathBuf> {
-            let dir = std::env::temp_dir().join("tubeshka-update");
+            let dir = std::env::temp_dir().join("k-tube-update");
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir)?;
             let path = dir.join(&name);
             let mut f = std::fs::File::create(&path)?;
-            // Tubeshka: the package comes from the gateway with the key
+            // K-Tube: the package comes from the gateway with the key
             crate::tubeshka::gateway::download(&url, &mut f, |done| {
                 *p2.lock() = (done as f32 / size.max(1) as f32).min(1.0);
             })

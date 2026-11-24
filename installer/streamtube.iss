@@ -1,11 +1,11 @@
-; Tubeshka installer (Inno Setup 6), based on the Stream Tube one
+; K-Tube installer (Inno Setup 6), based on the Stream Tube one
 ; Build:  ISCC.exe /DAppVersion=0.7.2-alpha installer\streamtube.iss
 ; Needs a release build in target\release and libmpv-2.dll in third_party\mpv.
 
 #ifndef AppVersion
   #define AppVersion "0.7.2-alpha"
 #endif
-#define AppName "Tubeshka"
+#define AppName "K-Tube"
 #define AppExe "streamtube.exe"
 #define Root ".."
 
@@ -15,17 +15,20 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=SteepMans (based on Stream Tube by Avaneesh Inamdar)
-AppPublisherURL=https://github.com/SteepMans/streamtube
-AppSupportURL=https://github.com/SteepMans/streamtube/issues
-AppUpdatesURL=https://github.com/SteepMans/streamtube/releases
+AppPublisherURL=https://github.com/SteepMans/k-tube
+AppSupportURL=https://github.com/SteepMans/k-tube/issues
+AppUpdatesURL=https://github.com/SteepMans/k-tube/releases
 ; per-user install: no admin prompt, and the in-app updater can replace files
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppName}
+; the same AppId as Tubeshka (the previous name): an update replaces it, but into the new folder
+UsePreviousAppDir=no
+UsePreviousGroup=no
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 OutputDir={#Root}\dist
-OutputBaseFilename=Tubeshka-{#AppVersion}-setup
+OutputBaseFilename=K-Tube-{#AppVersion}-setup
 SetupIconFile={#Root}\assets\streamtube.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -60,7 +63,7 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Registry]
 ; streamtube:// links (used by the browser userscript) open the app
-Root: HKCU; Subkey: "Software\Classes\streamtube"; ValueType: string; ValueName: ""; ValueData: "URL:Tubeshka"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\streamtube"; ValueType: string; ValueName: ""; ValueData: "URL:K-Tube"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\streamtube"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\streamtube\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"
 Root: HKCU; Subkey: "Software\Classes\streamtube\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""
@@ -68,6 +71,12 @@ Root: HKCU; Subkey: "Software\Classes\streamtube\shell\open\command"; ValueType:
 [Run]
 ; also runs after a silent in-app update, so the app comes back by itself
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall
+
+[InstallDelete]
+; the copy installed under the previous name Tubeshka: its folder and shortcuts
+Type: filesandordirs; Name: "{localappdata}\Programs\Tubeshka"
+Type: filesandordirs; Name: "{userprograms}\Tubeshka"
+Type: files; Name: "{userdesktop}\Tubeshka.lnk"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

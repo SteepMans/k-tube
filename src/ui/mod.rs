@@ -407,7 +407,7 @@ pub fn wordmark(cx: &App) -> Div {
         .items_baseline()
         .text_lg()
         .font_weight(FontWeight::BOLD)
-        // Tubeshka
+        // K-Tube
+        .child(div().text_color(p.accent).child("K-"))
         .child(div().text_color(p.text).child("Tube"))
-        .child(div().text_color(p.accent).child("shka"))
 }
