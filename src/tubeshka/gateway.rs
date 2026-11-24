@@ -74,6 +74,9 @@ pub async fn open_tunnel(host: &str, port: u16) -> Result<TlsStream<TcpStream>, 
         404 => err(404, "ключ не принят шлюзом (отозван или опечатка)"),
         403 => err(403, format!("шлюз не пускает к {host}")),
         429 => err(429, "слишком много соединений по ключу"),
+        503 if text.to_ascii_lowercase().contains("x-proxy-error: no_leg") => {
+            err(503, "выходы шлюза для YouTube сейчас недоступны, попробуйте через несколько минут")
+        }
         _ => err(status, format!("шлюз ответил {status} {detail}")),
     })
 }
