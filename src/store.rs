@@ -139,7 +139,7 @@ impl Default for Settings {
         }
         Self {
             theme: "dark".into(),
-            accent: 0xff0033,
+            accent: 0xab47bc,
             start_page: "home".into(),
             grid_columns: 0,
             region: "US".into(),
@@ -191,7 +191,7 @@ impl Default for Settings {
             feed_include_shorts: false,
             feed_include_live: true,
             download_dir: dirs::download_dir()
-                .map(|d| d.join("Stream Tube").to_string_lossy().into_owned())
+                .map(|d| d.join(crate::tubeshka::APP_NAME).to_string_lossy().into_owned())
                 .unwrap_or_default(),
             download_dir_chosen: false,
             download_format: "1080".into(),
@@ -338,6 +338,11 @@ pub fn mpv_http_proxy(p: &str) -> bool {
 }
 
 pub fn proxy_setting() -> Option<String> {
+    // Tubeshka: everything goes through the gateway's local proxy unless the user turned the gateway off
+    if crate::tubeshka::config::get().enabled {
+        // never direct: without the local proxy requests fail instead of leaking past the gateway
+        return Some(crate::tubeshka::proxy::local_url().unwrap_or_else(|| "http://127.0.0.1:9".into()));
+    }
     let p = settings_snapshot().proxy.clone();
     (!p.trim().is_empty()).then_some(p)
 }
@@ -359,7 +364,8 @@ pub fn data_dir() -> PathBuf {
             return d;
         }
         let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        let d = base.join("StreamTube");
+        // Tubeshka: its own profile, apart from an installed Stream Tube
+        let d = base.join("Tubeshka");
         // carry over data from the app's previous name
         let old = base.join("Ferrotube");
         if !d.exists() && old.exists() {

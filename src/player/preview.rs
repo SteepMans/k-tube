@@ -189,7 +189,8 @@ impl Preview {
         }
         let (tx, rx) = futures::channel::mpsc::unbounded::<MpvEvent>();
         let ua = crate::api::http::BROWSER_UA;
-        let proxy = store::settings_snapshot().proxy.clone();
+        // Tubeshka: the gateway's local proxy when it is on
+        let proxy = store::proxy_setting().unwrap_or_default();
         let mut opts: Vec<(&str, &str)> = vec![
             ("vo", "libmpv"),
             ("hwdec", "no"),

@@ -1,4 +1,4 @@
-//! In-app updates from the project's GitHub releases (pre-releases included).
+//! In-app updates. Tubeshka: from the gateway only (stable or beta channel), the installer signed with our key.
 use crate::api::http;
 use crate::store;
 use crate::ui::{blocking, toast};
@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const REPO: &str = "Avaneesh-Inamdar/Stream-Tube-Desktop";
-pub const RELEASES_PAGE: &str = "https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop/releases";
+pub const RELEASES_PAGE: &str = "https://github.com/SteepMans/streamtube/releases";
 
 #[derive(Clone, Debug)]
 pub struct Release {
@@ -28,6 +28,8 @@ pub struct Asset {
     pub size: u64,
     /// SHA-256 that GitHub reports for the file (lowercase hex)
     pub sha256: Option<String>,
+    /// Tubeshka: ed25519 signature of the sha256 (base64), from the gateway's manifest
+    pub signature: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -50,7 +52,7 @@ impl Global for Updates {}
 static BUSY: AtomicBool = AtomicBool::new(false);
 
 pub fn current_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    crate::tubeshka::version()
 }
 
 /// (major, minor, patch, stage, stage number). A plain release ranks above any
@@ -106,7 +108,7 @@ fn pick_asset(assets: &[Value]) -> Option<Asset> {
             .and_then(|d| d.strip_prefix("sha256:"))
             .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
             .map(str::to_ascii_lowercase);
-        Some(Asset { name: name.to_string(), url: url.to_string(), size: a.get("size").and_then(Value::as_u64).unwrap_or(0), sha256 })
+        Some(Asset { name: name.to_string(), url: url.to_string(), size: a.get("size").and_then(Value::as_u64).unwrap_or(0), sha256, signature: None })
     })
 }
 
@@ -127,8 +129,32 @@ pub(crate) fn file_sha256(path: &std::path::Path) -> Result<String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// The newest published release, if it is newer than this build.
+/// The newest release of our channel on the gateway, if it is newer than this build.
 pub fn check() -> Result<Option<Release>> {
+    let Some(m) = crate::tubeshka::update::latest()? else { return Ok(None) };
+    if !is_newer(&m.version, current_version()) {
+        return Ok(None);
+    }
+    let name = format!("{} {}", crate::tubeshka::APP_NAME, m.version);
+    Ok(Some(Release {
+        tag: format!("v{}", m.version),
+        name,
+        notes: m.notes.clone(),
+        page: format!("{RELEASES_PAGE}/tag/v{}", m.version),
+        prerelease: m.version.contains('-'),
+        asset: cfg!(windows).then(|| Asset {
+            name: format!("Tubeshka-{}-setup.exe", m.version),
+            url: m.path.clone(),
+            size: m.size,
+            sha256: Some(m.sha256.clone()),
+            signature: Some(m.signature.clone()),
+        }),
+    }))
+}
+
+/// Upstream's check of its GitHub releases (kept for reference; Tubeshka never calls it).
+#[allow(dead_code)]
+fn check_github() -> Result<Option<Release>> {
     let v = http::get_json(&format!("https://api.github.com/repos/{REPO}/releases?per_page=15"))?;
     let list = v.as_array().ok_or_else(|| anyhow!("unexpected reply from GitHub"))?;
     let newest = list
@@ -177,7 +203,7 @@ pub fn check_now(manual: bool, cx: &mut App) {
             Ok(None) => {
                 set_status(Status::UpToDate, cx);
                 if manual {
-                    toast(cx, format!("Stream Tube {} is the latest version", current_version()));
+                    toast(cx, format!("{} {} — последняя версия", crate::tubeshka::APP_NAME, current_version()));
                 }
             }
             Err(e) => {
@@ -222,7 +248,7 @@ pub fn install(cx: &mut App) {
         Status::Available(r) => r.clone(),
         _ => return,
     };
-    let Some(Asset { name, url, size, sha256 }) = rel.asset.clone().filter(|_| cfg!(windows)) else {
+    let Some(Asset { name, url, size, sha256, signature }) = rel.asset.clone().filter(|_| cfg!(windows)) else {
         // no installer for this platform: the release page has the downloads
         let _ = open::that(&rel.page);
         return;
@@ -234,15 +260,14 @@ pub fn install(cx: &mut App) {
     let r2 = result.clone();
     std::thread::spawn(move || {
         let res = (|| -> Result<std::path::PathBuf> {
-            let dir = std::env::temp_dir().join("streamtube-update");
+            let dir = std::env::temp_dir().join("tubeshka-update");
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir)?;
             let path = dir.join(&name);
             let mut f = std::fs::File::create(&path)?;
-            http::download_to(&url, &mut f, |done, total| {
-                let total = total.unwrap_or(size).max(1);
-                *p2.lock() = (done as f32 / total as f32).min(1.0);
-                true
+            // Tubeshka: the package comes from the gateway with the key
+            crate::tubeshka::gateway::download(&url, &mut f, |done| {
+                *p2.lock() = (done as f32 / size.max(1) as f32).min(1.0);
             })
             .context("download failed")?;
             drop(f);
@@ -257,6 +282,11 @@ pub fn install(cx: &mut App) {
             if file_sha256(&path)? != want {
                 let _ = std::fs::remove_file(&path);
                 anyhow::bail!("the download doesn't match the release's checksum");
+            }
+            // and only if our release key signed exactly this file
+            if !signature.as_deref().is_some_and(|sig| crate::tubeshka::update::verify(&want, sig)) {
+                let _ = std::fs::remove_file(&path);
+                anyhow::bail!("подпись обновления не сошлась, установка отменена");
             }
             Ok(path)
         })();

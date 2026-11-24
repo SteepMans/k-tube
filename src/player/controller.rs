@@ -185,7 +185,7 @@ impl Player {
             ("volume-max", "150"),
             ("hr-seek", "yes"),
             ("force-seekable", "yes"),
-            ("audio-client-name", "Stream Tube"),
+            ("audio-client-name", crate::tubeshka::APP_NAME),
             ("sub-font-size", "42"),
             ("sub-border-size", "2.5"),
             ("sub-auto", "no"),
@@ -200,7 +200,8 @@ impl Player {
             ("framedrop", "vo"),
         ];
         let opts: Vec<(&str, &str)> = opts.into_iter().collect();
-        let proxy = s.proxy.clone();
+        // Tubeshka: the gateway's local proxy when it is on
+        let proxy = crate::store::proxy_setting().unwrap_or_default();
         let mut opts_owned: Vec<(String, String)> = opts.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         // normal videos reach mpv through the app's local stream proxy, which already
         // uses the user's proxy; mpv itself only fetches live streams directly, and can
@@ -1021,7 +1022,7 @@ impl Player {
 
     pub fn screenshot(&mut self, cx: &mut Context<Self>) {
         if let Some(m) = &self.mpv {
-            let dir = dirs::picture_dir().unwrap_or_else(std::env::temp_dir).join("Stream Tube");
+            let dir = dirs::picture_dir().unwrap_or_else(std::env::temp_dir).join(crate::tubeshka::APP_NAME);
             let _ = std::fs::create_dir_all(&dir);
             let name = format!(
                 "{}-{}.png",

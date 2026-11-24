@@ -1,0 +1,103 @@
+name: Upstream sync
+
+# Once a day: merges new commits of Stream Tube (Avaneesh-Inamdar/Stream-Tube-Desktop, main) into a branch
+# upstream/<sha>, builds and tests it (build.yml), and when green fast-forwards main and tags the next beta
+# (tools/tubeshka/next_version.sh). The beta tag starts the release build: a pre-release on the beta channel.
+# A conflict or a red build stops here with a message to the owner; main stays as it was.
+
+on:
+  schedule:
+    - cron: "40 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.m.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          ssh-key: ${{ secrets.UPSTREAM_SYNC_KEY }}
+
+      - name: Merge upstream
+        id: m
+        env:
+          TG_TOKEN: ${{ secrets.TG_NOTIFY_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_NOTIFY_CHAT }}
+        run: |
+          set -eu
+          notify() { curl -sS -m 20 "https://api.telegram.org/bot$TG_TOKEN/sendMessage" --data-urlencode "chat_id=$TG_CHAT" \
+            --data-urlencode "parse_mode=HTML" --data-urlencode "text=$1" > /dev/null || true; }
+          git config user.name "tubeshka-sync"
+          git config user.email "tubeshka-sync@users.noreply.github.com"
+          git remote add upstream https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop.git
+          git fetch -q upstream main
+          up=$(git rev-parse upstream/main)
+          if git merge-base --is-ancestor "$up" HEAD; then
+            echo "Nothing new upstream"; echo "branch=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          short=${up:0:8}
+          branch="upstream/$short"
+          if git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
+            echo "$branch was tried already"; echo "branch=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git checkout -q -b "$branch"
+          if ! git merge --no-ff -q -m "Синхронизация: Stream Tube $short" -m "Было: новых правок основного проекта не было в Tubeshka." -m "Стало: они пришли в бету." "$up"; then
+            git merge --abort || true
+            notify "<b>Tubeshka</b>: правки Stream Tube $short не сливаются сами (конфликт). Main не тронут."
+            exit 1
+          fi
+          git push -q origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: merge
+    if: needs.merge.outputs.branch != ''
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.merge.outputs.branch }}
+    secrets: inherit
+
+  promote:
+    needs: [merge, build]
+    if: always() && needs.merge.outputs.branch != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          ssh-key: ${{ secrets.UPSTREAM_SYNC_KEY }}
+
+      - name: Fast-forward main and tag a beta
+        env:
+          BRANCH: ${{ needs.merge.outputs.branch }}
+          RESULT: ${{ needs.build.result }}
+          TG_TOKEN: ${{ secrets.TG_NOTIFY_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_NOTIFY_CHAT }}
+        run: |
+          set -eu
+          notify() { curl -sS -m 20 "https://api.telegram.org/bot$TG_TOKEN/sendMessage" --data-urlencode "chat_id=$TG_CHAT" \
+            --data-urlencode "parse_mode=HTML" --data-urlencode "text=$1" > /dev/null || true; }
+          if [ "$RESULT" != "success" ]; then
+            notify "<b>Tubeshka</b>: сборка с правками Stream Tube ($BRANCH) не прошла. Main не тронут."
+            exit 1
+          fi
+          git fetch -q origin "$BRANCH"
+          git merge --ff-only -q "origin/$BRANCH"
+          next=$(sh tools/tubeshka/next_version.sh beta)
+          git push -q origin main
+          git tag "v$next"
+          git push -q origin "v$next"
+          git push -q origin --delete "$BRANCH" || true
+          notify "<b>Tubeshka</b>: правки Stream Tube влиты, собирается бета v$next."

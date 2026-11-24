@@ -405,9 +405,9 @@ pub fn wordmark(cx: &App) -> Div {
     div()
         .flex()
         .items_baseline()
-        .gap(px(5.))
         .text_lg()
         .font_weight(FontWeight::BOLD)
-        .child(div().text_color(p.text).child("Stream"))
-        .child(div().text_color(p.accent).child("Tube"))
+        // Tubeshka
+        .child(div().text_color(p.text).child("Tube"))
+        .child(div().text_color(p.accent).child("shka"))
 }

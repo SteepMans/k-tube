@@ -1,0 +1,161 @@
+name: Build
+
+# Windows build of Tubeshka on GitHub's free runners (public repository).
+# - pull request: tests and a release build (the gateway address comes from the secret; PRs from forks build without it)
+# - tag v*: the same build with the version from the tag, then a release with the installer and the signed
+#   update-manifest.json (docs/updates.md); a version with "-" (beta) is a pre-release.
+# - called by upstream-sync.yml for the merge of upstream (input ref).
+# Pushes to main build nothing: their PR was built already.
+
+on:
+  pull_request:
+    paths: ["src/**", "Cargo.toml", "Cargo.lock", "build.rs", "assets/**", "installer/**", "vendor/**",
+            "CHANGELOG-tubeshka.json", "tubeshka-version.txt", ".github/workflows/build.yml"]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ inputs.ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # libmpv from shinchiro's mpv builds, pinned and checked against its SHA-256 (as upstream)
+  MPV_URL: https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
+  MPV_SHA256: 273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452
+  VULKAN_LOADER_TAG: v1.3.296
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ] && [ -z "${{ inputs.ref }}" ]; then
+            v="${GITHUB_REF_NAME#v}"
+            echo "$v" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]{1,16})?$' || { echo "::error::bad tag $GITHUB_REF_NAME"; exit 1; }
+          else
+            v=$(tr -d '\r\n' < tubeshka-version.txt)
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "TUBESHKA_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Version $v"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        env:
+          TUBESHKA_GATEWAY_URL: ${{ secrets.TUBESHKA_GATEWAY_URL }}
+        run: cargo build --release --locked
+
+      - name: Get libmpv
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:MPV_URL -OutFile mpv.7z
+          $hash = (Get-FileHash mpv.7z -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:MPV_SHA256) { throw "libmpv archive checksum mismatch: $hash" }
+          New-Item -ItemType Directory -Force third_party/mpv | Out-Null
+          7z e -y mpv.7z libmpv-2.dll -othird_party/mpv | Out-Null
+
+      - name: Vulkan loader from cache
+        id: vkcache
+        uses: actions/cache@v4
+        with:
+          path: third_party/vulkan
+          key: vulkan-loader-${{ env.VULKAN_LOADER_TAG }}
+
+      - name: Build the Vulkan loader
+        if: steps.vkcache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --quiet --depth 1 --branch $env:VULKAN_LOADER_TAG https://github.com/KhronosGroup/Vulkan-Loader.git vulkan-loader
+          cmake -S vulkan-loader -B vulkan-loader/build -A x64 -D UPDATE_DEPS=ON -D BUILD_TESTS=OFF -D CMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build vulkan-loader/build --config Release --target vulkan
+          if ($LASTEXITCODE -ne 0) { throw "Vulkan loader build failed" }
+          New-Item -ItemType Directory -Force third_party/vulkan | Out-Null
+          $dll = Get-ChildItem -Recurse vulkan-loader/build -Filter vulkan-1.dll | Select-Object -First 1
+          Copy-Item $dll.FullName third_party/vulkan/vulkan-1.dll
+          Copy-Item vulkan-loader/LICENSE.txt third_party/vulkan/LICENSE.txt
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DAppVersion=$env:TUBESHKA_VERSION" installer\streamtube.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tubeshka-windows
+          path: dist/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: windows
+    if: github.ref_type == 'tag' && inputs.ref == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tubeshka-windows
+          path: dist
+
+      - name: Sign and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ secrets.TUBESHKA_UPDATE_KEY }}
+          VERSION: ${{ needs.windows.outputs.version }}
+        run: |
+          set -euo pipefail
+          pkg="Tubeshka-$VERSION-setup.exe"
+          test -f "dist/$pkg"
+          keyf=$(mktemp); trap 'rm -f "$keyf" dist/digest.bin' EXIT
+          printf '%s\n' "$KEY" > "$keyf"
+          sha=$(sha256sum "dist/$pkg" | cut -d' ' -f1)
+          printf '%s' "$sha" | xxd -r -p > dist/digest.bin
+          sig=$(openssl pkeyutl -sign -inkey "$keyf" -rawin -in dist/digest.bin | base64 -w0)
+          size=$(stat -c %s "dist/$pkg")
+          # "What's new": the newest entry of CHANGELOG-tubeshka.json
+          notes=$(python3 -c "import json; c=json.load(open('CHANGELOG-tubeshka.json',encoding='utf-8')); print('\n'.join('• '+i for i in c[0]['items']))")
+          python3 - "$pkg" "$sha" "$size" "$sig" "$notes" <<'PY'
+          import json, os, sys
+          pkg, sha, size, sig, notes = sys.argv[1:]
+          m = {"platform": "streamtube", "version": os.environ["VERSION"], "sha256": sha, "size": int(size),
+               "signature": sig, "notes": notes, "package": pkg}
+          open("dist/update-manifest.json", "w", encoding="utf-8").write(json.dumps(m, ensure_ascii=False, indent=2))
+          PY
+          pre=()
+          case "$VERSION" in *-*) pre=(--prerelease) ;; esac
+          printf '%s\n' "$notes" > dist/notes.md
+          gh release create "v$VERSION" "dist/$pkg" dist/update-manifest.json --verify-tag "${pre[@]}" \
+            --title "Tubeshka $VERSION" --notes-file dist/notes.md
