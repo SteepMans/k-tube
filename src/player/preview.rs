@@ -15,6 +15,8 @@ use std::time::Duration;
 
 /// How long the pointer has to rest on a thumbnail before the preview starts.
 const DELAY: Duration = Duration::from_millis(650);
+/// Tallest quality a preview plays (360p and lower: a fraction of the gateway's bandwidth).
+const PREVIEW_HEIGHT: u32 = 360;
 
 pub struct Preview {
     mpv: Option<Arc<Mpv>>,
@@ -164,6 +166,8 @@ impl Preview {
     }
 
     fn clear(&mut self, cx: &mut Context<Self>) {
+        // stop the previous preview's downloads right away, not when mpv gets to it
+        crate::player::proxy::preview_next();
         if let Some(m) = &self.mpv {
             let _ = m.command(&["stop"]);
         }
@@ -205,7 +209,11 @@ impl Preview {
             ("osc", "no"),
             ("osd-level", "0"),
             ("cache", "yes"),
-            ("demuxer-max-bytes", "24MiB"),
+            // a preview is light on the gateway: only ~15 s ahead and a few MB are fetched
+            ("demuxer-max-bytes", "8MiB"),
+            ("demuxer-max-back-bytes", "4MiB"),
+            ("cache-secs", "15"),
+            ("demuxer-readahead-secs", "15"),
             ("network-timeout", "15"),
             ("hls-bitrate", "min"),
             ("user-agent", ua),
@@ -255,14 +263,19 @@ impl Preview {
 
     fn start(&mut self, info: &crate::api::types::StreamInfo, cx: &mut Context<Self>) {
         let src = if info.hls_only {
-            info.hls_url.as_deref().map(|u| crate::player::proxy::local_hls(u, 360, None))
+            info.hls_url.as_deref().map(|u| crate::player::proxy::local_hls(u, PREVIEW_HEIGHT, None))
         } else if info.is_live || (info.video.is_empty() && info.muxed.is_empty()) {
             info.hls_url.clone()
         } else {
             let codec = store::settings_snapshot().codec_pref.clone();
-            let (v, _) = streams::pick_formats(info, 360, &codec, None);
+            let (v, _) = streams::pick_formats(info, PREVIEW_HEIGHT, &codec, None);
             match v {
-                Some(v) => streams::mpv_source(Some(v), None, info.length_secs),
+                // video only (the preview is muted), kept in memory for the next hover
+                Some(v) => {
+                    let generation = crate::player::proxy::preview_next();
+                    let key = format!("{}:{}", info.id, v.itag);
+                    Some(crate::player::proxy::preview_url(&v.url, v.content_length, &v.mime, &key, generation))
+                }
                 None => info.muxed.first().map(|m| m.url.clone()),
             }
         };

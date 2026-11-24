@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const FIRST_CHUNK: u64 = 1 << 20; // small first chunk: fast start and seeks
 const CHUNK: u64 = 8 << 20;
@@ -17,6 +18,73 @@ struct Entry {
     url: String,
     len: Option<u64>,
     mime: String,
+    /// set for hover previews: (cache key, preview generation it belongs to)
+    preview: Option<(String, u64)>,
+}
+
+/// Generation of hover previews: bumped when a preview ends or another starts, so
+/// the fetches of the previous one stop at once and free their connections.
+static PREVIEW_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Ends the fetches of the current hover preview; returns the new generation.
+pub fn preview_next() -> u64 {
+    PREVIEW_GEN.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Bytes kept per previewed stream (from its start) and for all of them together.
+const PREVIEW_ENTRY_MAX: usize = 6 << 20;
+const PREVIEW_CACHE_MAX: usize = 64 << 20;
+
+/// The beginnings of recently previewed streams, so hovering the same video again
+/// plays from memory instead of downloading it again. Least recently used goes first.
+#[derive(Default)]
+struct PreviewCache {
+    map: HashMap<String, (Vec<u8>, u64)>,
+    tick: u64,
+    total: usize,
+}
+
+fn preview_cache() -> &'static Mutex<PreviewCache> {
+    static C: OnceLock<Mutex<PreviewCache>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(PreviewCache::default()))
+}
+
+impl PreviewCache {
+    /// Cached bytes of `key` in start..=end (empty when `start` is past what is cached).
+    fn slice(&mut self, key: &str, start: u64, end: u64) -> Vec<u8> {
+        self.tick += 1;
+        let tick = self.tick;
+        match self.map.get_mut(key) {
+            Some((data, used)) if (start as usize) < data.len() => {
+                *used = tick;
+                let to = (end as usize).saturating_add(1).min(data.len());
+                data[start as usize..to].to_vec()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Adds bytes fetched at offset `at`; only a continuation of what is cached is kept.
+    fn append(&mut self, key: &str, at: u64, bytes: &[u8]) {
+        let have = self.map.get(key).map_or(0, |(d, _)| d.len());
+        if at as usize != have || have >= PREVIEW_ENTRY_MAX {
+            return;
+        }
+        let take = bytes.len().min(PREVIEW_ENTRY_MAX - have);
+        self.tick += 1;
+        let tick = self.tick;
+        let e = self.map.entry(key.to_string()).or_insert_with(|| (Vec::new(), tick));
+        e.0.extend_from_slice(&bytes[..take]);
+        e.1 = tick;
+        self.total += take;
+        while self.total > PREVIEW_CACHE_MAX {
+            let oldest = self.map.iter().filter(|(k, _)| k.as_str() != key).min_by_key(|(_, (_, u))| *u).map(|(k, _)| k.clone());
+            let Some(oldest) = oldest else { break };
+            if let Some((d, _)) = self.map.remove(&oldest) {
+                self.total -= d.len();
+            }
+        }
+    }
 }
 
 struct Proxy {
@@ -50,6 +118,10 @@ const HLS: &str = "#hls";
 const PASS: &str = "#pass";
 
 fn register(p: &Proxy, url: &str, len: Option<u64>, mime: &str) -> u64 {
+    register_entry(p, url, len, mime, None)
+}
+
+fn register_entry(p: &Proxy, url: &str, len: Option<u64>, mime: &str, preview: Option<(String, u64)>) -> u64 {
     let id = {
         let mut n = p.next.lock();
         *n += 1;
@@ -62,7 +134,7 @@ fn register(p: &Proxy, url: &str, len: Option<u64>, mime: &str) -> u64 {
         let min_keep = id.saturating_sub(10_000);
         s.retain(|k, _| *k >= min_keep);
     }
-    s.insert(id, Entry { url: url.to_string(), len, mime: mime.to_string() });
+    s.insert(id, Entry { url: url.to_string(), len, mime: mime.to_string(), preview });
     id
 }
 
@@ -73,6 +145,18 @@ pub fn local_url(url: &str, len: Option<u64>, mime: &str) -> String {
     }
     let Some(p) = proxy() else { return url.to_string() };
     let id = register(p, url, len, mime);
+    format!("http://127.0.0.1:{}/s/{id}", p.port)
+}
+
+/// Like `local_url`, for a hover preview: its beginning is kept in memory under `key`
+/// (the same video and format give the same key), and its fetches stop when the
+/// preview generation `generation` is over (see `preview_next`).
+pub fn preview_url(url: &str, len: Option<u64>, mime: &str, key: &str, generation: u64) -> String {
+    if !url.contains("googlevideo.com") {
+        return url.to_string();
+    }
+    let Some(p) = proxy() else { return url.to_string() };
+    let id = register_entry(p, url, len, mime, Some((key.to_string(), generation)));
     format!("http://127.0.0.1:{}/s/{id}", p.port)
 }
 
@@ -400,11 +484,16 @@ fn serve(mut conn: TcpStream) -> std::io::Result<()> {
         };
     }
     let id: Option<u64> = path.strip_prefix("/s/").and_then(|s| s.parse().ok());
-    let entry = id.and_then(|id| p.streams.lock().get(&id).map(|e| (e.url.clone(), e.len, e.mime.clone())));
-    let Some((url, mut len, mime)) = entry else {
+    let entry = id.and_then(|id| p.streams.lock().get(&id).map(|e| (e.url.clone(), e.len, e.mime.clone(), e.preview.clone())));
+    let Some((url, mut len, mime, preview)) = entry else {
         conn.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
         return Ok(());
     };
+    let stale = |preview: &Option<(String, u64)>| preview.as_ref().is_some_and(|(_, g)| *g != PREVIEW_GEN.load(Ordering::SeqCst));
+    if stale(&preview) {
+        conn.write_all(b"HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        return Ok(());
+    }
     if len.is_none() {
         len = probe_len(&url);
         if let (Some(id), Some(l)) = (id, len) {
@@ -439,10 +528,21 @@ fn serve(mut conn: TcpStream) -> std::io::Result<()> {
         return Ok(());
     }
     let mut pos = start;
+    // a preview hovered again: what is in memory goes first, the network only for the rest
+    if let Some((key, _)) = &preview {
+        let cached = preview_cache().lock().slice(key, start, end);
+        if !cached.is_empty() {
+            conn.write_all(&cached)?;
+            pos += cached.len() as u64;
+        }
+    }
     let mut first = true;
     let mut stalls = 0;
     let mut buf = vec![0u8; 64 * 1024];
     while pos <= end {
+        if stale(&preview) {
+            return Ok(());
+        }
         let size = if first { FIRST_CHUNK } else { CHUNK };
         first = false;
         let chunk_end = (pos + size - 1).min(end);
@@ -482,6 +582,13 @@ fn serve(mut conn: TcpStream) -> std::io::Result<()> {
                             }
                             return Err(e);
                         }
+                        if let Some((key, _)) = &preview {
+                            preview_cache().lock().append(key, pos, &buf[..n]);
+                            if stale(&preview) {
+                                // the preview ended: drop the upstream connection now
+                                return Ok(());
+                            }
+                        }
                         pos += n as u64;
                     }
                     break;
@@ -502,4 +609,39 @@ fn serve(mut conn: TcpStream) -> std::io::Result<()> {
         }
     }
     conn.flush()
+}
+
+#[cfg(test)]
+mod preview_cache_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_beginnings_within_limits() {
+        let mut c = PreviewCache::default();
+        c.append("a", 0, &[1, 2, 3]);
+        c.append("a", 5, &[9]); // not a continuation: ignored
+        c.append("a", 3, &[4, 5]);
+        assert_eq!(c.slice("a", 1, 3), vec![2, 3, 4]);
+        assert_eq!(c.slice("a", 2, 100), vec![3, 4, 5]);
+        assert!(c.slice("a", 5, 10).is_empty());
+        assert!(c.slice("b", 0, 10).is_empty());
+        // one stream never takes more than its share
+        let big = vec![0u8; PREVIEW_ENTRY_MAX + 10];
+        c.append("big", 0, &big);
+        assert_eq!(c.slice("big", 0, u64::MAX - 1).len(), PREVIEW_ENTRY_MAX);
+        // and all of them stay under the total: the least recently used go first
+        for i in 0..(PREVIEW_CACHE_MAX / PREVIEW_ENTRY_MAX + 3) {
+            c.append(&format!("v{i}"), 0, &big);
+        }
+        assert!(c.total <= PREVIEW_CACHE_MAX);
+        assert_eq!(c.total, c.map.values().map(|(d, _)| d.len()).sum::<usize>());
+        assert!(!c.map.contains_key("a"));
+    }
+
+    #[test]
+    fn generations_move_on() {
+        let a = preview_next();
+        let b = preview_next();
+        assert!(b > a);
+    }
 }
