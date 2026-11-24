@@ -1,0 +1,37 @@
+K-Tube - third-party components
+===============================
+
+K-Tube itself is distributed under the MIT License (LICENSE.txt). The Windows
+package also contains the components below, each under its own license.
+
+libmpv-2.dll
+------------
+mpv media player library (https://mpv.io), Windows build by shinchiro:
+https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261111
+(archive mpv-dev-x86_64-20261111-git-bcde6b93cc.7z, mpv commit bcde6b93cc).
+
+This build of mpv and the libraries linked into it (FFmpeg, libass, and others)
+are distributed under the GNU General Public License, version 2 or later; parts
+of it are also available under the GNU Lesser General Public License, version
+2.1 or later. The license texts are installed next to the library:
+libmpv-GPL-2.0.txt and libmpv-LGPL-2.1.txt.
+
+K-Tube loads the library at run time and does not modify it. The complete
+corresponding source code is available from the projects above:
+  mpv:        https://github.com/mpv-player/mpv (commit bcde6b93cc)
+  build:      https://github.com/shinchiro/mpv-winbuild-cmake (tag 20261111,
+              lists the exact versions of every bundled library)
+On request, the K-Tube maintainers will provide a copy of this source code for
+at least three years after the release, through the issue tracker at
+https://github.com/SteepMans/k-tube.
+
+vulkan\vulkan-1.dll
+-------------------
+Khronos Vulkan Loader v1.3.296 (https://github.com/KhronosGroup/Vulkan-Loader),
+built from source unchanged. Apache License 2.0, see vulkan\LICENSE.txt.
+Used only when Windows has no Vulkan loader of its own.
+
+Stream Tube Desktop
+-------------------
+K-Tube is a fork of Stream Tube Desktop by Avaneesh Inamdar
+(https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop), MIT License.
