@@ -13,6 +13,7 @@ mod player;
 mod store;
 mod ui;
 mod updater;
+mod tubeshka;
 
 use gpui_kit::*;
 
@@ -64,6 +65,7 @@ fn main() {
     }
     perf::init();
     store::init();
+    tubeshka::init();
     perf::mark("store");
     display::choose();
     perf::mark("display");
@@ -92,7 +94,7 @@ fn main() {
                 // taskbars can't match it to streamtube.desktop (StartupWMClass).
                 app_id: Some("streamtube".into()),
                 window_bounds: Some(saved_window_bounds(cx)),
-                titlebar: Some(TitlebarOptions { title: Some("Stream Tube".into()), appears_transparent: true, ..Default::default() }),
+                titlebar: Some(TitlebarOptions { title: Some(tubeshka::APP_NAME.into()), appears_transparent: true, ..Default::default() }),
                 window_min_size: Some(size(px(720.), px(480.))),
                 ..Default::default()
             };

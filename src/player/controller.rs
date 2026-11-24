@@ -200,7 +200,8 @@ impl Player {
             ("framedrop", "vo"),
         ];
         let opts: Vec<(&str, &str)> = opts.into_iter().collect();
-        let proxy = s.proxy.clone();
+        // Tubeshka: the gateway's local proxy when it is on
+        let proxy = crate::store::proxy_setting().unwrap_or_default();
         let mut opts_owned: Vec<(String, String)> = opts.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         // normal videos reach mpv through the app's local stream proxy, which already
         // uses the user's proxy; mpv itself only fetches live streams directly, and can

@@ -6,6 +6,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
+    Gateway,
     General,
     Player,
     Premium,
@@ -21,6 +22,7 @@ enum Section {
 }
 
 const SECTIONS: &[(Section, &str, &str)] = &[
+    (Section::Gateway, "Шлюз TGeshka", "shield-check"),
     (Section::General, "General", "palette"),
     (Section::Player, "Player", "circle-play"),
     (Section::Premium, "Premium features", "sparkles"),
@@ -53,6 +55,7 @@ pub struct SettingsPage {
     /// SponsorBlock contribution stats for the private ID (None while loading)
     sb_stats: Option<Result<crate::api::services::SbUserInfo, String>>,
     sb_serial: u64,
+    gateway: Entity<crate::tubeshka::ui::GatewayPanel>,
     _subs: Vec<Subscription>,
 }
 
@@ -130,11 +133,13 @@ impl SettingsPage {
             search,
             sb_stats: None,
             sb_serial: 0,
+            gateway: cx.new(|cx| crate::tubeshka::ui::GatewayPanel::new(window, cx)),
             _subs: subs,
         };
         page.load_sb_stats(cx);
         page.check_tools(cx);
-        page.section = Section::General;
+        // Tubeshka: without a key nothing loads, so the settings open on the gateway
+        page.section = if crate::tubeshka::config::valid_token(&crate::tubeshka::config::get().token) { Section::General } else { Section::Gateway };
         page
     }
 
@@ -1083,7 +1088,7 @@ impl SettingsPage {
         let s = store::settings_snapshot();
         let mpv = crate::player::mpv::available();
         card(cx)
-            .child(row("Stream Tube", &format!("Version {}", env!("CARGO_PKG_VERSION")), div(), cx))
+            .child(row(crate::tubeshka::APP_NAME, &format!("Наш клиент YouTube, версия {} (основа — Stream Tube {})", crate::tubeshka::version(), env!("CARGO_PKG_VERSION")), div(), cx))
             .child(row("Video engine", if mpv { "libmpv" } else if cfg!(windows) { "libmpv-2.dll not found" } else { "libmpv not found (install the libmpv package)" }, div(), cx))
             .child(row("yt-dlp", self.ytdlp_version.as_deref().unwrap_or("not installed"), div(), cx))
             .child({
@@ -1191,6 +1196,7 @@ impl Render for SettingsPage {
             );
         }
         let render_section = |this: &Self, sec: Section, cx: &mut Context<Self>| match sec {
+            Section::Gateway => div().child(this.gateway.clone()),
             Section::General => this.general(cx),
             Section::Player => this.player(cx),
             Section::Premium => this.premium(cx),
@@ -1218,6 +1224,7 @@ impl Render for SettingsPage {
             );
         }
         let content = match self.section {
+            Section::Gateway => div().child(self.gateway.clone()),
             Section::General => self.general(cx),
             Section::Player => self.player(cx),
             Section::Premium => self.premium(cx),
