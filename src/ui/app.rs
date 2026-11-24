@@ -2536,7 +2536,7 @@ impl AppView {
         }
         let has_installer = cfg!(windows) && rel.asset.is_some();
         let size = rel.asset.as_ref().map(|a| a.size).filter(|s| *s > 0).map(|s| format!("{:.0} MB", s as f64 / 1_048_576.0));
-        let version = rel.name.trim_start_matches("Stream Tube").trim().trim_start_matches('v').to_string();
+        let version = rel.name.trim_start_matches(crate::tubeshka::APP_NAME).trim().trim_start_matches('v').to_string();
         let accent = crate::ui::app_icon::icon_accent(store::settings_snapshot().accent);
         let [c0, _, c2] = crate::ui::app_icon::accent_stops(accent);
         let mut meta = vec![format!("You have {}", crate::updater::current_version())];
@@ -2594,7 +2594,7 @@ impl AppView {
                     .child(icon("sparkles").size_3p5().text_color(white()))
                     .child("New version"),
             )
-            .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(white()).child(format!("Stream Tube {version}")))
+            .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(white()).child(format!("{} {version}", crate::tubeshka::APP_NAME)))
             .child(div().text_sm().text_color(hsla(0., 0., 1., 0.85)).child(meta.join("  ·  ")));
 
         let mut body = div().flex().flex_col().gap_4().p_6();
@@ -2652,7 +2652,7 @@ impl AppView {
                                 ),
                         ),
                     )
-                    .child(div().text_xs().text_color(p.text2).child("Stream Tube restarts by itself when it's done.")),
+                    .child(div().text_xs().text_color(p.text2).child("Приложение перезапустится само.")),
             );
             return div().flex().flex_col().child(hero).child(body).into_any_element();
         }

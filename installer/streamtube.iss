@@ -1,23 +1,23 @@
-; Stream Tube installer (Inno Setup 6)
+; Tubeshka installer (Inno Setup 6), based on the Stream Tube one
 ; Build:  ISCC.exe /DAppVersion=0.7.2-alpha installer\streamtube.iss
 ; Needs a release build in target\release and libmpv-2.dll in third_party\mpv.
 
 #ifndef AppVersion
   #define AppVersion "0.7.2-alpha"
 #endif
-#define AppName "Stream Tube"
+#define AppName "Tubeshka"
 #define AppExe "streamtube.exe"
 #define Root ".."
 
 [Setup]
-AppId={{6F1D7C1E-5B7A-4C1D-9A55-2E7A0C3B9F41}
+AppId={{B3E2A7C4-91D6-4E0B-8F5A-7C2D1E9B4A63}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher=Avaneesh Inamdar
-AppPublisherURL=https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop
-AppSupportURL=https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop/issues
-AppUpdatesURL=https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop/releases
+AppPublisher=SteepMans (based on Stream Tube by Avaneesh Inamdar)
+AppPublisherURL=https://github.com/SteepMans/streamtube
+AppSupportURL=https://github.com/SteepMans/streamtube/issues
+AppUpdatesURL=https://github.com/SteepMans/streamtube/releases
 ; per-user install: no admin prompt, and the in-app updater can replace files
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppName}
@@ -25,7 +25,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 OutputDir={#Root}\dist
-OutputBaseFilename=StreamTube-{#AppVersion}-setup
+OutputBaseFilename=Tubeshka-{#AppVersion}-setup
 SetupIconFile={#Root}\assets\streamtube.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -60,7 +60,7 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Registry]
 ; streamtube:// links (used by the browser userscript) open the app
-Root: HKCU; Subkey: "Software\Classes\streamtube"; ValueType: string; ValueName: ""; ValueData: "URL:Stream Tube"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\streamtube"; ValueType: string; ValueName: ""; ValueData: "URL:Tubeshka"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\streamtube"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\streamtube\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"
 Root: HKCU; Subkey: "Software\Classes\streamtube\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""

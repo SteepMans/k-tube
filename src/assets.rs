@@ -16,6 +16,11 @@ impl AssetSource for Assets {
         if path == "brand/logo.svg" {
             return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.svg"))));
         }
+        // Tubeshka: one lavender logo whatever the accent
+        if path.starts_with("brand/logo-") {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.svg"))));
+        }
+        #[allow(unreachable_code)]
         if let Some(hex) = path.strip_prefix("brand/logo-").and_then(|p| p.strip_suffix(".svg")) {
             if let Ok(accent) = u32::from_str_radix(hex, 16) {
                 return Ok(Some(Cow::Owned(crate::ui::app_icon::logo_svg(accent).into_bytes())));
