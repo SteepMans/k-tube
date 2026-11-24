@@ -51,6 +51,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#Root}\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\third_party\mpv\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion
+; libmpv is GPLv2+ (parts LGPLv2.1+): the license texts next to it, sources in THIRD_PARTY_NOTICES.txt
+Source: "{#Root}\licenses\GPL-2.0.txt"; DestDir: "{app}"; DestName: "libmpv-GPL-2.0.txt"; Flags: ignoreversion
+Source: "{#Root}\licenses\LGPL-2.1.txt"; DestDir: "{app}"; DestName: "libmpv-LGPL-2.1.txt"; Flags: ignoreversion
+Source: "{#Root}\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Khronos Vulkan loader, used only when Windows has no vulkan-1.dll (see src/player/mpv.rs)
 Source: "{#Root}\third_party\vulkan\vulkan-1.dll"; DestDir: "{app}\vulkan"; Flags: ignoreversion
 Source: "{#Root}\third_party\vulkan\LICENSE.txt"; DestDir: "{app}\vulkan"; Flags: ignoreversion
