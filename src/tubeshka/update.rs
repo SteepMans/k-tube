@@ -1,4 +1,4 @@
-//! Updates through the gateway (docs/update-v1.md in api-gateway): the manifest and the installer come only from the
+//! Updates through the gateway (its /v1/update API): the manifest and the installer come only from the
 //! gateway with the key, the installer runs only if its sha256 is signed by our ed25519 key (over the raw 32 bytes).
 use anyhow::{Result, anyhow};
 use base64::Engine as _;

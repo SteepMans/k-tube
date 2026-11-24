@@ -1,5 +1,5 @@
 #!/bin/sh
-# Part of K-Tube (from TGeshka)
+# Part of K-Tube
 #
 #
 # Prints the next K-Tube version from the v* tags of the repository:

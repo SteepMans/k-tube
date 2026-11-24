@@ -1,4 +1,4 @@
-//! Settings → "Шлюз TGeshka": the key, the gateway's state, the update channel and "What's new".
+//! Settings → "Внешний шлюз": the key, the gateway's state, the update channel and "What's new".
 use super::{config, gateway, proxy};
 use crate::ui::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -15,7 +15,7 @@ pub struct GatewayPanel {
 
 impl GatewayPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let key = cx.new(|cx| InputState::new(window, cx).placeholder("Ключ TGeshka (tc_…) или ссылка tgeshka://gateway?…"));
+        let key = cx.new(|cx| InputState::new(window, cx).placeholder("Ключ доступа (tc_…) или ссылка с ключом"));
         let url = cx.new(|cx| {
             let mut i = InputState::new(window, cx).placeholder("https://…");
             i.set_value(config::get().gateway_url, window, cx);
@@ -46,7 +46,7 @@ impl GatewayPanel {
                     toast(cx, "Ключ сохранён");
                     this.check(cx);
                 }
-                None => toast(cx, "Это не ключ TGeshka: он начинается с tc_ и длиной 46 знаков"),
+                None => toast(cx, "Это не ключ шлюза: он начинается с tc_ и длиной 46 знаков"),
             }
         }));
         subs.push(cx.subscribe_in(&url, window, |this: &mut Self, st, ev: &InputEvent, _, cx| {
@@ -123,7 +123,7 @@ impl Render for GatewayPanel {
         let key_desc = if config::valid_token(&c.token) {
             format!("Сохранён ключ {}… Вставьте новый, чтобы заменить", &c.token[..7])
         } else {
-            "Тот же ключ, что в TGeshka. Без него видео и страницы не загрузятся".to_string()
+            "Ключ доступа к шлюзу. Без него видео и страницы не загрузятся".to_string()
         };
         let state = match (&self.status, self.checking) {
             (_, true) => "Проверяю…".to_string(),
@@ -175,8 +175,8 @@ impl Render for GatewayPanel {
             .px_5()
             .py_2()
             .child(row(
-                "Весь трафик через шлюз TGeshka",
-                "YouTube открывается с адреса за границей. Выключать — только если есть свой способ. Нужен перезапуск",
+                "Весь трафик через внешний шлюз",
+                "YouTube открывается через выходы шлюза. Выключать — только если есть свой способ. Нужен перезапуск",
                 div()
                     .id("gw-on")
                     .relative()
@@ -195,7 +195,7 @@ impl Render for GatewayPanel {
             ))
             .child(row("Ключ", &key_desc, field(&self.key, 360., cx), cx));
         if super::built_in_gateway().is_empty() {
-            card = card.child(row("Адрес шлюза", "Его присылают вместе с ключом", field(&self.url, 360., cx), cx));
+            card = card.child(row("Адрес шлюза", "Адрес прокси-шлюза (https://…), если сборка без встроенного", field(&self.url, 360., cx), cx));
         }
         card = card
             .child(row(
