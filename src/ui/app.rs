@@ -1073,7 +1073,7 @@ impl AppView {
             self.history.remove(0);
         }
         self.forward.clear();
-        window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+        window.set_window_title(&format!("{} - {}", self.route.title(), crate::tubeshka::APP_NAME));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1134,7 +1134,7 @@ impl AppView {
         if cx.global::<UiState>().fullscreen && !matches!(self.route, Route::Watch { .. }) {
             toggle_fullscreen(window, cx);
         }
-        window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+        window.set_window_title(&format!("{} - {}", self.route.title(), crate::tubeshka::APP_NAME));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1302,7 +1302,7 @@ impl AppView {
                     self.page = build_page(&self.route.clone(), window, cx);
                 }
             }
-            window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+            window.set_window_title(&format!("{} - {}", self.route.title(), crate::tubeshka::APP_NAME));
             cx.notify();
         }
     }
@@ -1312,7 +1312,7 @@ impl AppView {
             let cur_r = std::mem::replace(&mut self.route, r);
             let cur_p = std::mem::replace(&mut self.page, p);
             self.history.push((cur_r, cur_p));
-            window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+            window.set_window_title(&format!("{} - {}", self.route.title(), crate::tubeshka::APP_NAME));
             cx.notify();
         }
     }

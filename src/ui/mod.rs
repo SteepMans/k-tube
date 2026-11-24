@@ -405,7 +405,6 @@ pub fn wordmark(cx: &App) -> Div {
     div()
         .flex()
         .items_baseline()
-        .gap(px(5.))
         .text_lg()
         .font_weight(FontWeight::BOLD)
         // Tubeshka
