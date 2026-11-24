@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 pub struct Config {
     /// all traffic through the gateway (on by default); off = upstream behaviour with the user's own proxy
     pub enabled: bool,
-    /// the TGeshka key, tc_...
+    /// the gateway access key, tc_...
     pub token: String,
     /// gateway address when the build has none built in
     pub gateway_url: String,
@@ -64,8 +64,8 @@ pub fn update(f: impl FnOnce(&mut Config)) {
     }
 }
 
-/// The gateway's base URL (https://host), from the build or the settings. TGeshka's form wss://host/v1/stream
-/// is accepted too: only the host is taken.
+/// The gateway's base URL (https://host), from the build or the settings. The form wss://host/v1/stream is accepted
+/// too: only the host is taken.
 pub fn gateway_url() -> Option<String> {
     let built = super::built_in_gateway();
     let u = if built.is_empty() { get().gateway_url } else { built.to_string() };
@@ -86,14 +86,17 @@ pub fn gateway_host() -> Option<String> {
     Some(rest.split(['/', ':']).next()?.to_ascii_lowercase())
 }
 
-/// Whether a key looks like a TGeshka key.
+/// Whether a key looks like a gateway access key.
 pub fn valid_token(t: &str) -> bool {
     t.len() == 46 && t.starts_with("tc_") && t[3..].bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
-/// Parses tgeshka://gateway?url=...&token=... (the link the owner sends with a key).
+/// Scheme of the key links the gateway hands out (gateway protocol, kept as is so existing links keep working).
+const KEY_LINK_PREFIX: &str = "tgeshka://gateway?";
+
+/// Parses a key link <scheme>://gateway?url=...&token=... (sent together with a key).
 pub fn parse_link(s: &str) -> Option<(Option<String>, Option<String>)> {
-    let q = s.trim().strip_prefix("tgeshka://gateway?")?;
+    let q = s.trim().strip_prefix(KEY_LINK_PREFIX)?;
     let mut url = None;
     let mut token = None;
     for kv in q.split('&') {
@@ -115,7 +118,7 @@ mod tests {
         let t = format!("tc_{}", "a".repeat(43));
         assert!(super::valid_token(&t));
         assert!(!super::valid_token("tc_short"));
-        let (u, k) = super::parse_link(&format!("tgeshka://gateway?url=https%3A%2F%2Fgw.example&token={t}")).unwrap();
+        let (u, k) = super::parse_link(&format!("{}url=https%3A%2F%2Fgw.example&token={t}", super::KEY_LINK_PREFIX)).unwrap();
         assert_eq!(u.as_deref(), Some("https://gw.example"));
         assert_eq!(k.as_deref(), Some(t.as_str()));
         assert_eq!(super::normalize("wss://gw.example/v1/stream").as_deref(), Some("https://gw.example"));

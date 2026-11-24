@@ -1,6 +1,6 @@
-//! K-Tube: this fork's additions. All network traffic of the app goes through the TGeshka gateway (the same key as
-//! TGeshka): a local HTTP proxy hands every connection to the gateway, which reaches YouTube from abroad.
-//! Protocol: docs/proxy-v1.md in SteepMans/api-gateway.
+//! K-Tube: this fork's additions. All network traffic of the app goes through an external proxy gateway: a local
+//! HTTP proxy hands every connection to the gateway, which reaches YouTube from its own exits. The gateway's address
+//! comes from the build (an environment variable in CI) or from the settings, the access key from the user.
 pub mod config;
 pub mod gateway;
 pub mod proxy;
@@ -25,6 +25,9 @@ pub fn version() -> &'static str {
 pub fn built_in_gateway() -> &'static str {
     option_env!("TUBESHKA_GATEWAY_URL").unwrap_or("").trim()
 }
+
+/// Header that names the client to the gateway (gateway protocol: the server expects exactly this name).
+pub const CLIENT_HEADER: &str = "X-TGeshka-Client";
 
 /// "streamtube/<version>": the client name the gateway counts.
 pub fn client_header() -> String {

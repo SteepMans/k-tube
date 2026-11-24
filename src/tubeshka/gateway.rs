@@ -22,7 +22,7 @@ fn err(status: u16, text: impl Into<String>) -> OpenError {
 pub async fn open_tunnel(host: &str, port: u16) -> Result<TlsStream<TcpStream>, OpenError> {
     let c = config::get();
     if !config::valid_token(&c.token) {
-        return Err(err(407, "нет ключа TGeshka"));
+        return Err(err(407, "нет ключа шлюза"));
     }
     let Some(gw_host) = config::gateway_host() else { return Err(err(502, "не задан адрес шлюза")) };
     let tcp = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((gw_host.as_str(), 443)))
@@ -37,8 +37,9 @@ pub async fn open_tunnel(host: &str, port: u16) -> Result<TlsStream<TcpStream>, 
         .map_err(|e| err(502, format!("TLS со шлюзом: {e}")))?;
     let req = format!(
         "GET /v1/proxy HTTP/1.1\r\nHost: {gw_host}\r\nConnection: Upgrade\r\nUpgrade: tcp/1\r\nAuthorization: Bearer {}\r\n\
-         X-TGeshka-Client: {}\r\nX-Proxy-Target: {host}:{port}\r\n\r\n",
+         {}: {}\r\nX-Proxy-Target: {host}:{port}\r\n\r\n",
         c.token,
+        super::CLIENT_HEADER,
         super::client_header()
     );
     tls.write_all(req.as_bytes()).await.map_err(|e| err(502, format!("шлюз: {e}")))?;
@@ -98,7 +99,7 @@ fn agent() -> &'static ureq::Agent {
 fn base() -> Result<(String, String)> {
     let c = config::get();
     if !config::valid_token(&c.token) {
-        return Err(anyhow!("нет ключа TGeshka"));
+        return Err(anyhow!("нет ключа шлюза"));
     }
     let url = config::gateway_url().ok_or_else(|| anyhow!("не задан адрес шлюза"))?;
     Ok((url, c.token))
@@ -109,7 +110,7 @@ fn get(path: &str) -> Result<(u16, Option<ureq::Body>)> {
     let resp = agent()
         .get(&format!("{url}{path}"))
         .header("Authorization", &format!("Bearer {token}"))
-        .header("X-TGeshka-Client", &super::client_header())
+        .header(super::CLIENT_HEADER, &super::client_header())
         .call()?;
     let status = resp.status().as_u16();
     Ok((status, Some(resp.into_body())))
@@ -170,7 +171,7 @@ pub fn download(path: &str, out: &mut dyn std::io::Write, mut progress: impl FnM
         .new_agent()
         .get(&format!("{url}{path}"))
         .header("Authorization", &format!("Bearer {token}"))
-        .header("X-TGeshka-Client", &super::client_header())
+        .header(super::CLIENT_HEADER, &super::client_header())
         .call()?;
     if resp.status().as_u16() != 200 {
         return Err(anyhow!("шлюз ответил {}", resp.status()));

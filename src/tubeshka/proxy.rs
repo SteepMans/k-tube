@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Hosts the gateway lets through (the same list as the server, internal/proxyhosts in api-gateway).
+/// Hosts the gateway lets through (must match the list on the gateway's side).
 const GATEWAY_HOSTS: &[&str] = &[
     "youtube.com", "*.youtube.com", "youtu.be", "youtube-nocookie.com", "*.youtube-nocookie.com", "*.googlevideo.com",
     "*.ytimg.com", "*.ggpht.com", "google.com", "*.google.com", "*.gstatic.com", "*.googleapis.com",
@@ -65,7 +65,7 @@ pub fn notices(cx: &mut gpui_kit::App) {
             };
             if serial != seen {
                 seen = serial;
-                let _ = cx.update(|cx| crate::ui::toast(cx, format!("Шлюз TGeshka: {text}")));
+                let _ = cx.update(|cx| crate::ui::toast(cx, format!("Внешний шлюз: {text}")));
             }
         }
     })

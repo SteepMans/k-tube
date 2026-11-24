@@ -22,7 +22,7 @@ enum Section {
 }
 
 const SECTIONS: &[(Section, &str, &str)] = &[
-    (Section::Gateway, "Шлюз TGeshka", "shield-check"),
+    (Section::Gateway, "Внешний шлюз", "shield-check"),
     (Section::General, "General", "palette"),
     (Section::Player, "Player", "circle-play"),
     (Section::Premium, "Premium features", "sparkles"),
