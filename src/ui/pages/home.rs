@@ -213,10 +213,17 @@ fn feed_rows(items: &[Item], settings: &store::Settings, columns: usize, width: 
     rows
 }
 
+/// A card under an id of its place in the feed. The card's own ids come from the
+/// video, and two elements with one id share their click state: of two cards of one
+/// video on screen, the lower one's menu (⋮) and click did nothing.
+fn feed_cell(index: usize, card: AnyElement) -> AnyElement {
+    div().id(("feed-cell", index)).flex_none().child(card).into_any_element()
+}
+
 fn render_feed_row(row: &FeedRow, items: &[Item], card_width: Pixels, cx: &mut App) -> AnyElement {
     match row {
         FeedRow::Cards { indices, gap } => grid(
-            indices.iter().map(|&index| grid_item(&items[index], card_width, true, cx)).collect(),
+            indices.iter().map(|&index| feed_cell(index, grid_item(&items[index], card_width, true, cx))).collect(),
             card_width,
         ).flex_nowrap().pb(*gap).into_any_element(),
         FeedRow::Shorts { indices, gap } => {
@@ -229,7 +236,10 @@ fn render_feed_row(row: &FeedRow, items: &[Item], card_width: Pixels, cx: &mut A
                 .pb(*gap)
                 .child(div().flex().items_center().gap_2().child(icon("zap").text_color(p.accent)).child(section_title("Shorts", cx)))
                 .child(div().flex().gap_4().overflow_hidden().children(
-                    indices.iter().filter_map(|&index| items[index].as_video()).map(|video| shorts_card(video, px(200.), cx)),
+                    indices
+                        .iter()
+                        .filter_map(|&index| Some((index, items[index].as_video()?)))
+                        .map(|(index, video)| feed_cell(index, shorts_card(video, px(200.), cx))),
                 ))
                 .into_any_element()
         }
