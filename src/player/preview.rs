@@ -14,7 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// How long the pointer has to rest on a thumbnail before the preview starts.
-const DELAY: Duration = Duration::from_millis(650);
+const DELAY: Duration = Duration::from_millis(500);
+/// After this much of the rest the stream is resolved and the start of the preview
+/// fetched, so the first frame is ready when the delay is over.
+const WARM_AFTER: Duration = Duration::from_millis(200);
 /// Tallest quality a preview plays (360p and lower: a fraction of the gateway's bandwidth).
 const PREVIEW_HEIGHT: u32 = 360;
 
@@ -91,6 +94,8 @@ pub fn hover(id: &str, hovered: bool, cx: &mut App) {
     let id = id.to_string();
     if p.read(cx).id.as_deref() != Some(id.as_str()) {
         cx.global::<PreviewSlot>().0.set(None);
+        crate::perf::preview_start();
+        crate::perf::preview_mark(&format!("hover {id}"));
     }
     let serial = p.update(cx, |p, cx| {
         p.serial += 1;
@@ -100,15 +105,30 @@ pub fn hover(id: &str, hovered: bool, cx: &mut App) {
         p.id = Some(id.clone());
         p.serial
     });
-    // wait for the pointer to rest, then resolve streams and start
+    // once the pointer rests: resolve streams and fetch the preview's start, then play
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(DELAY).await;
-        let current = cx.update(|cx| preview(cx).read(cx).serial == serial);
-        if !current {
+        cx.background_executor().timer(WARM_AFTER).await;
+        if !cx.update(|cx| preview(cx).read(cx).serial == serial) {
             return;
         }
+        crate::perf::preview_mark("warming");
         let id2 = id.clone();
-        let info = crate::ui::blocking(move || streams::get_streams(&id2)).await;
+        let info = crate::ui::blocking(move || {
+            let info = streams::get_streams(&id2);
+            if let Ok(i) = &info {
+                warm_up(i);
+            }
+            info
+        });
+        // the preview player too, while the pointer rests
+        let _ = cx.update(|cx| preview(cx).update(cx, |p, cx| drop(p.ensure_mpv(cx))));
+        cx.background_executor().timer(DELAY - WARM_AFTER).await;
+        if !cx.update(|cx| preview(cx).read(cx).serial == serial) {
+            return;
+        }
+        crate::perf::preview_mark("delay over");
+        let info = info.await;
+        crate::perf::preview_mark(if info.is_ok() { "streams ready" } else { "streams failed" });
         let _ = cx.update(|cx| {
             let p = preview(cx);
             if p.read(cx).serial != serial {
@@ -119,6 +139,16 @@ pub fn hover(id: &str, hovered: bool, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Fetches ahead what the preview of `info` needs for its first frame (HLS only:
+/// the other formats keep their beginnings in the proxy's preview cache).
+fn warm_up(info: &crate::api::types::StreamInfo) {
+    if info.hls_only && !info.is_live {
+        if let Some(u) = info.hls_url.as_deref() {
+            crate::player::proxy::warm_preview(u, PREVIEW_HEIGHT);
+        }
+    }
 }
 
 /// Ends any preview (pointer left, page changed, real playback started).
@@ -247,6 +277,7 @@ impl Preview {
                 let ok = this.update(cx, |p, cx| {
                     if started {
                         p.ready = p.id.is_some();
+                        crate::perf::preview_mark("mpv playback restart");
                     }
                     if frame {
                         p.on_frame(cx);
@@ -263,7 +294,7 @@ impl Preview {
 
     fn start(&mut self, info: &crate::api::types::StreamInfo, cx: &mut Context<Self>) {
         let src = if info.hls_only {
-            info.hls_url.as_deref().map(|u| crate::player::proxy::local_hls(u, PREVIEW_HEIGHT, None))
+            info.hls_url.as_deref().map(|u| crate::player::proxy::local_hls_preview(u, PREVIEW_HEIGHT))
         } else if info.is_live || (info.video.is_empty() && info.muxed.is_empty()) {
             info.hls_url.clone()
         } else {
@@ -282,6 +313,7 @@ impl Preview {
         let Some(src) = src else { return };
         let Some(m) = self.ensure_mpv(cx) else { return };
         self.ready = false;
+        crate::perf::preview_mark("loadfile");
         let _ = m.command(&["loadfile", &src, "replace", "-1", "pause=no"]);
     }
 
@@ -308,6 +340,7 @@ impl Preview {
             cx.drop_image(o, None);
         }
         if first {
+            crate::perf::preview_mark("first frame shown");
             cx.emit(PreviewEvent::Changed);
         }
         cx.notify();

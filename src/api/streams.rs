@@ -315,7 +315,11 @@ fn hls_client(video_id: &str, c: HlsClient) -> Result<StreamInfo> {
 /// The variants of an HLS master playlist, as formats for the quality menu,
 /// plus its audio renditions (one per language, `audio_language` = display name).
 fn hls_variants(master_url: &str) -> Result<(Vec<StreamFormat>, Vec<StreamFormat>)> {
+    crate::perf::preview_mark("master playlist fetch");
     let text = http::get_text(master_url)?;
+    crate::perf::preview_mark("master playlist fetched");
+    // mpv asks for the same master next: serve it from memory
+    crate::player::proxy::warm_put(master_url, &text);
     let attr = |l: &str, k: &str| -> Option<String> {
         let rest = l.split(&format!("{k}=")).nth(1)?;
         Some(if let Some(q) = rest.strip_prefix('"') { q.split('"').next()?.to_string() } else { rest.split(',').next()?.to_string() })

@@ -8,8 +8,10 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::OnceLock;
+use parking_lot::Condvar;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 const FIRST_CHUNK: u64 = 1 << 20; // small first chunk: fast start and seeks
 const CHUNK: u64 = 8 << 20;
@@ -173,6 +175,157 @@ pub fn local_hls(url: &str, max_height: u32, audio: Option<&str>) -> String {
     }
 }
 
+/// Like `local_hls` for a hover preview: the chosen variant only, without its audio
+/// rendition (the preview is muted, and the audio playlist and its first segments
+/// would be fetched before the first frame).
+pub fn local_hls_preview(url: &str, max_height: u32) -> String {
+    let Some(p) = proxy() else { return url.to_string() };
+    let id = register(p, url, None, HLS);
+    format!("http://127.0.0.1:{}/h/{id}?max={max_height}&noaudio=1", p.port)
+}
+
+// ───────────────────────── warm-up for hover previews ─────────────────────────
+
+/// A body fetched ahead of mpv: `None` while the fetch runs, then the result.
+type WarmSlot = Arc<(Mutex<Option<Option<Arc<WarmBody>>>>, Condvar)>;
+
+struct WarmBody {
+    data: Vec<u8>,
+    ctype: String,
+}
+
+/// How long fetched-ahead bodies are kept, and how many (a preview takes the master,
+/// one variant playlist, the init segment and two media segments).
+const WARM_TTL: Duration = Duration::from_secs(600);
+const WARM_MAX: usize = 60;
+
+fn warm_map() -> &'static Mutex<HashMap<String, (WarmSlot, Instant)>> {
+    static W: OnceLock<Mutex<HashMap<String, (WarmSlot, Instant)>>> = OnceLock::new();
+    W.get_or_init(Default::default)
+}
+
+/// The slot for `url`, and whether the caller created it (and so has to fill it).
+fn warm_slot(url: &str) -> (WarmSlot, bool) {
+    let mut m = warm_map().lock();
+    m.retain(|_, (_, t)| t.elapsed() < WARM_TTL);
+    if let Some((s, _)) = m.get(url) {
+        return (s.clone(), false);
+    }
+    while m.len() >= WARM_MAX {
+        let Some(oldest) = m.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone()) else { break };
+        m.remove(&oldest);
+    }
+    let s: WarmSlot = Default::default();
+    m.insert(url.to_string(), (s.clone(), Instant::now()));
+    (s, true)
+}
+
+fn warm_wait(s: &WarmSlot) -> Option<Arc<WarmBody>> {
+    let (lock, cv) = &**s;
+    let mut g = lock.lock();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while g.is_none() {
+        if cv.wait_until(&mut g, deadline).timed_out() {
+            return None;
+        }
+    }
+    g.clone().flatten()
+}
+
+fn warm_set(s: &WarmSlot, body: Option<Arc<WarmBody>>) {
+    let (lock, cv) = &**s;
+    *lock.lock() = Some(body);
+    cv.notify_all();
+}
+
+/// A body fetched ahead, waiting for it while its fetch still runs.
+fn warm_get(url: &str) -> Option<Arc<WarmBody>> {
+    let s = warm_map().lock().get(url).filter(|(_, t)| t.elapsed() < WARM_TTL).map(|(s, _)| s.clone())?;
+    warm_wait(&s)
+}
+
+/// Fetches `url` once into the warm cache, or joins a fetch already running.
+fn warm_fetch(url: &str) -> Option<Arc<WarmBody>> {
+    let (s, mine) = warm_slot(url);
+    if !mine {
+        return warm_wait(&s);
+    }
+    let mut body = None;
+    for attempt in 0..2u64 {
+        if let Ok(mut r) = agent().get(url).header("User-Agent", crate::api::http::BROWSER_UA).call() {
+            if r.status().as_u16() < 400 {
+                let ctype = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+                if let Ok(data) = r.body_mut().with_config().limit(16 << 20).read_to_vec() {
+                    body = Some(Arc::new(WarmBody { data, ctype }));
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300 * (attempt + 1)));
+    }
+    if body.is_none() {
+        crate::perf::preview_mark("warm-up fetch failed");
+        // keep no failure: mpv then fetches it itself
+        warm_map().lock().remove(url);
+    }
+    warm_set(&s, body.clone());
+    body
+}
+
+/// Keeps a master playlist that stream resolving fetched already, so mpv gets it from memory.
+pub fn warm_put(url: &str, text: &str) {
+    let (s, mine) = warm_slot(url);
+    if mine {
+        warm_set(&s, Some(Arc::new(WarmBody { data: text.as_bytes().to_vec(), ctype: "application/vnd.apple.mpegurl".into() })));
+    }
+}
+
+/// Fetches in the background what mpv needs for the first frame of a preview of the
+/// HLS master `master_url`: the variant playlist it will pick, the init segment and
+/// the first media segments. mpv's own requests are then answered from memory.
+pub fn warm_preview(master_url: &str, max_height: u32) {
+    let master_url = master_url.to_string();
+    std::thread::spawn(move || {
+        crate::perf::preview_mark("warm-up start");
+        let Some(m) = warm_fetch(&master_url) else { return };
+        let text = String::from_utf8_lossy(&m.data).into_owned();
+        let Some(uri) = choose_variant(&master_variants(&text), max_height).map(|(_, u)| u.to_string()) else { return };
+        let Some(pl) = warm_fetch(&uri) else { return };
+        let text = String::from_utf8_lossy(&pl.data).into_owned();
+        let fetches: Vec<_> = first_media(&text, 2).into_iter().map(|u| std::thread::spawn(move || warm_fetch(&u))).collect();
+        for f in fetches {
+            let _ = f.join();
+        }
+        crate::perf::preview_mark("warm-up done");
+    });
+}
+
+/// The init segment (EXT-X-MAP) and the first `n` media segments of a media playlist
+/// (absolute URLs only; nothing for byte-range playlists, which mpv asks for by range).
+fn first_media(text: &str, n: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut segs = 0;
+    for l in text.lines().map(str::trim) {
+        if l.starts_with("#EXT-X-BYTERANGE") {
+            return Vec::new();
+        }
+        if l.starts_with("#EXT-X-MAP") {
+            if let Some(u) = hls_attr(l, "URI").filter(|u| u.starts_with("http")) {
+                out.push(u);
+            }
+        } else if !l.is_empty() && !l.starts_with('#') {
+            if l.starts_with("http") {
+                out.push(l.to_string());
+            }
+            segs += 1;
+            if segs >= n {
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn hls_attr(line: &str, key: &str) -> Option<String> {
     // match KEY= at an attribute boundary (so AUDIO= doesn't hit "VIDEO-RANGE=..."-like names)
     let mut search = line;
@@ -194,7 +347,62 @@ fn hls_attr(line: &str, key: &str) -> Option<String> {
 /// `max_height` and the codec preference) plus its default audio rendition.
 /// ffmpeg opens every playlist a master lists before starting, so serving the
 /// full master (often 30+ playlists) delays the start by many seconds.
-fn rewrite_master(p: &Proxy, text: &str, max_height: u32, audio_name: Option<&str>) -> String {
+/// The (EXT-X-STREAM-INF line, URI) pairs of a master playlist.
+fn master_variants(text: &str) -> Vec<(&str, &str)> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines
+        .windows(2)
+        .filter(|w| w[0].starts_with("#EXT-X-STREAM-INF") && !w[1].starts_with('#'))
+        .map(|w| (w[0], w[1]))
+        .collect()
+}
+
+/// The variant mpv should play: the best fit for `max_height` and the codec preference.
+fn choose_variant<'a>(variants: &[(&'a str, &'a str)], max_height: u32) -> Option<(&'a str, &'a str)> {
+    let class = |l: &str| -> u32 {
+        hls_attr(l, "RESOLUTION")
+            .and_then(|r| r.split_once('x').and_then(|(w, h)| Some(crate::api::streams::quality_class(w.parse().ok()?, h.parse().ok()?))))
+            .unwrap_or(0)
+    };
+    let pref = crate::store::settings_snapshot().codec_pref.clone();
+    let codec_rank = |l: &str| -> u32 {
+        let c = hls_attr(l, "CODECS").unwrap_or_default().to_lowercase();
+        let kind = if c.contains("av01") { "av1" } else if c.contains("vp09") || c.contains("vp9") { "vp9" } else { "h264" };
+        if kind == pref { 3 } else if kind == "h264" { 2 } else { 1 }
+    };
+    let bw = |l: &str| hls_attr(l, "BANDWIDTH").and_then(|b| b.parse::<u64>().ok()).unwrap_or(0);
+    let fits: Vec<&(&str, &str)> = variants.iter().filter(|(l, _)| max_height == 0 || class(l) <= max_height).collect();
+    let chosen = if fits.is_empty() {
+        variants.iter().min_by_key(|(l, _)| (class(l), bw(l)))
+    } else {
+        fits.into_iter().max_by_key(|(l, _)| (class(l), !crate::api::streams::is_hdr_codecs(&hls_attr(l, "CODECS").unwrap_or_default()), codec_rank(l), bw(l)))
+    };
+    chosen.copied()
+}
+
+/// A tag line without one of its attributes (`KEY=value` or `KEY="value"`).
+fn without_attr(line: &str, key: &str) -> String {
+    let Some((tag, attrs)) = line.split_once(':') else { return line.to_string() };
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    for ch in attrs.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                cur.push(ch);
+            }
+            ',' if !quoted => parts.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    parts.push(cur);
+    let prefix = format!("{key}=");
+    let kept: Vec<String> = parts.into_iter().filter(|a| !a.starts_with(&prefix)).collect();
+    format!("{tag}:{}", kept.join(","))
+}
+
+fn rewrite_master(p: &Proxy, text: &str, max_height: u32, audio_name: Option<&str>, video_only: bool) -> String {
     let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     let mut header = Vec::new();
     let mut medias = Vec::new();
@@ -217,32 +425,15 @@ fn rewrite_master(p: &Proxy, text: &str, max_height: u32, audio_name: Option<&st
         }
         i += 1;
     }
-    let class = |l: &str| -> u32 {
-        hls_attr(l, "RESOLUTION")
-            .and_then(|r| r.split_once('x').and_then(|(w, h)| Some(crate::api::streams::quality_class(w.parse().ok()?, h.parse().ok()?))))
-            .unwrap_or(0)
-    };
-    let pref = crate::store::settings_snapshot().codec_pref.clone();
-    let codec_rank = |l: &str| -> u32 {
-        let c = hls_attr(l, "CODECS").unwrap_or_default().to_lowercase();
-        let kind = if c.contains("av01") { "av1" } else if c.contains("vp09") || c.contains("vp9") { "vp9" } else { "h264" };
-        if kind == pref { 3 } else if kind == "h264" { 2 } else { 1 }
-    };
-    let bw = |l: &str| hls_attr(l, "BANDWIDTH").and_then(|b| b.parse::<u64>().ok()).unwrap_or(0);
-    let fits: Vec<&(&str, &str)> = variants.iter().filter(|(l, _)| max_height == 0 || class(l) <= max_height).collect();
-    let chosen = if fits.is_empty() {
-        variants.iter().min_by_key(|(l, _)| (class(l), bw(l)))
-    } else {
-        fits.into_iter().max_by_key(|(l, _)| (class(l), !crate::api::streams::is_hdr_codecs(&hls_attr(l, "CODECS").unwrap_or_default()), codec_rank(l), bw(l)))
-    };
-    let Some((inf, uri)) = chosen else { return rewrite_playlist(p, text, max_height) };
+    let Some((inf, uri)) = choose_variant(&variants, max_height) else { return rewrite_playlist(p, text, max_height) };
+    let inf_line = if video_only { without_attr(inf, "AUDIO") } else { inf.to_string() };
     let local_pl = |u: &str| format!("http://127.0.0.1:{}/h/{}?max=0", p.port, register(p, u, None, HLS));
     let mut out = String::new();
     for h in header {
         out.push_str(h);
         out.push('\n');
     }
-    if let Some(group) = hls_attr(inf, "AUDIO") {
+    if let Some(group) = hls_attr(inf, "AUDIO").filter(|_| !video_only) {
         let in_group: Vec<&&str> = medias
             .iter()
             .filter(|m| hls_attr(m, "TYPE").as_deref() == Some("AUDIO") && hls_attr(m, "GROUP-ID").as_deref() == Some(group.as_str()))
@@ -267,7 +458,7 @@ fn rewrite_master(p: &Proxy, text: &str, max_height: u32, audio_name: Option<&st
             out.push('\n');
         }
     }
-    out.push_str(inf);
+    out.push_str(&inf_line);
     out.push('\n');
     out.push_str(&local_pl(uri));
     out.push('\n');
@@ -337,9 +528,12 @@ fn rewrite_playlist(p: &Proxy, text: &str, max_height: u32) -> String {
     out
 }
 
-fn serve_playlist(conn: &mut TcpStream, p: &Proxy, url: &str, max_height: u32, audio: Option<&str>) -> std::io::Result<()> {
-    let mut text = None;
+fn serve_playlist(conn: &mut TcpStream, p: &Proxy, url: &str, max_height: u32, audio: Option<&str>, video_only: bool) -> std::io::Result<()> {
+    let mut text = warm_get(url).map(|b| String::from_utf8_lossy(&b.data).into_owned());
     for attempt in 0..3u64 {
+        if text.is_some() {
+            break;
+        }
         if let Ok(mut r) = agent().get(url).header("User-Agent", crate::api::http::BROWSER_UA).call() {
             if r.status().as_u16() < 400 {
                 text = r.body_mut().with_config().limit(16 << 20).read_to_string().ok();
@@ -352,18 +546,29 @@ fn serve_playlist(conn: &mut TcpStream, p: &Proxy, url: &str, max_height: u32, a
         conn.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
         return Ok(());
     };
-    let body = if text.contains("#EXT-X-STREAM-INF") { rewrite_master(p, &text, max_height, audio) } else { rewrite_playlist(p, &text, max_height) };
+    let body = if text.contains("#EXT-X-STREAM-INF") { rewrite_master(p, &text, max_height, audio, video_only) } else { rewrite_playlist(p, &text, max_height) };
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     conn.write_all(head.as_bytes())?;
     conn.write_all(body.as_bytes())?;
+    crate::perf::preview_mark(&format!("proxy playlist served ({} bytes upstream)", text.len()));
     conn.flush()
 }
 
 /// Plain pass-through (HLS segments): forwards the request and streams the reply.
 fn serve_pass(conn: &mut TcpStream, url: &str, range: Option<(u64, Option<u64>)>, head_only: bool) -> std::io::Result<()> {
+    // fetched ahead for a preview: from memory (mpv asks for whole segments, or from 0)
+    if !head_only && matches!(range, None | Some((0, None))) {
+        if let Some(b) = warm_get(url) {
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.ctype, b.data.len());
+            conn.write_all(head.as_bytes())?;
+            conn.write_all(&b.data)?;
+            crate::perf::preview_mark(&format!("proxy segment from memory ({} bytes)", b.data.len()));
+            return conn.flush();
+        }
+    }
     let mut resp = None;
     for attempt in 0..3u64 {
         let mut req = agent().get(url).header("User-Agent", crate::api::http::BROWSER_UA);
@@ -384,6 +589,7 @@ fn serve_pass(conn: &mut TcpStream, url: &str, range: Option<(u64, Option<u64>)>
         }
     }
     let Some(r) = resp else {
+        crate::perf::preview_mark("proxy segment failed upstream");
         conn.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
         return Ok(());
     };
@@ -405,8 +611,10 @@ fn serve_pass(conn: &mut TcpStream, url: &str, range: Option<(u64, Option<u64>)>
     if head_only {
         return Ok(());
     }
+    crate::perf::preview_mark("proxy segment headers");
     let mut body = r.into_body().into_reader();
-    std::io::copy(&mut body, conn)?;
+    let n = std::io::copy(&mut body, conn)?;
+    crate::perf::preview_mark(&format!("proxy segment done ({n} bytes)"));
     conn.flush()
 }
 
@@ -461,7 +669,7 @@ fn serve(mut conn: TcpStream) -> std::io::Result<()> {
     let path = parts.next().unwrap_or("");
     let Some(p) = proxy() else { return Ok(()) };
     if crate::perf::on() {
-        eprintln!("[proxy] {method} {path} range={range:?}");
+        crate::perf::preview_mark(&format!("proxy {method} {} range={range:?}", path.split('?').next().unwrap_or(path)));
     }
     let lookup =|rest: &str| -> Option<String> {
         let id: u64 = rest.split('?').next()?.parse().ok()?;
@@ -472,8 +680,9 @@ fn serve(mut conn: TcpStream) -> std::io::Result<()> {
         let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')));
         let max = param("max").and_then(|m| m.parse().ok()).unwrap_or(0);
         let audio = param("audio").map(crate::api::http::urldecode);
+        let video_only = param("noaudio") == Some("1");
         return match lookup(rest) {
-            Some(url) => serve_playlist(&mut conn, p, &url, max, audio.as_deref()),
+            Some(url) => serve_playlist(&mut conn, p, &url, max, audio.as_deref(), video_only),
             None => conn.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
         };
     }
@@ -636,6 +845,33 @@ mod preview_cache_tests {
         assert!(c.total <= PREVIEW_CACHE_MAX);
         assert_eq!(c.total, c.map.values().map(|(d, _)| d.len()).sum::<usize>());
         assert!(!c.map.contains_key("a"));
+    }
+
+    #[test]
+    fn preview_playlists() {
+        let master = "#EXTM3U\n#EXT-X-INDEPENDENT-SEGMENTS\n\
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"234\",NAME=\"Default\",DEFAULT=YES,URI=\"https://a/audio.m3u8\"\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS=\"avc1.4d401e,mp4a.40.2\",RESOLUTION=640x360,AUDIO=\"234\"\n\
+            https://a/360.m3u8\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS=\"avc1.4d401f,mp4a.40.2\",RESOLUTION=1280x720,AUDIO=\"234\"\n\
+            https://a/720.m3u8\n";
+        let v = master_variants(master);
+        assert_eq!(v.len(), 2);
+        assert_eq!(choose_variant(&v, 360).map(|(_, u)| u), Some("https://a/360.m3u8"));
+        assert_eq!(
+            without_attr(v[0].0, "AUDIO"),
+            "#EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS=\"avc1.4d401e,mp4a.40.2\",RESOLUTION=640x360"
+        );
+        let media = "#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MAP:URI=\"https://a/init\"\n#EXTINF:5,\nhttps://a/s1\n#EXTINF:5,\nhttps://a/s2\n#EXTINF:5,\nhttps://a/s3\n";
+        assert_eq!(first_media(media, 2), vec!["https://a/init", "https://a/s1", "https://a/s2"]);
+        assert!(first_media("#EXTM3U\n#EXT-X-BYTERANGE:100@0\nhttps://a/f\n", 2).is_empty());
+    }
+
+    #[test]
+    fn warm_bodies_are_shared() {
+        warm_put("https://a/master-test", "#EXTM3U");
+        assert_eq!(warm_get("https://a/master-test").map(|b| b.data.clone()), Some(b"#EXTM3U".to_vec()));
+        assert!(warm_get("https://a/never").is_none());
     }
 
     #[test]
