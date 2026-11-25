@@ -31,6 +31,18 @@ fn freshen(items: Vec<Item>) -> Vec<Item> {
     fresh
 }
 
+/// Adds a page to the feed, leaving out videos the feed already has. YouTube's
+/// next pages repeat videos of the earlier ones, and a feed kept from the last
+/// session goes on with the pages of the newly loaded one.
+fn append_unique(items: &mut Vec<Item>, page: Vec<Item>) {
+    let mut seen: std::collections::HashSet<String> =
+        items.iter().filter_map(|i| if let Item::Video(v) = i { Some(v.id.clone()) } else { None }).collect();
+    items.extend(page.into_iter().filter(|i| match i {
+        Item::Video(v) => seen.insert(v.id.clone()),
+        _ => true,
+    }));
+}
+
 /// Where the home feed comes from, so a cached feed is only shown for the same source.
 fn feed_source() -> &'static str {
     if crate::api::web::connected() {
@@ -135,6 +147,9 @@ pub struct HomePage {
     chip: usize,
     items: Load<Arc<Vec<Item>>>,
     continuation: Option<String>,
+    /// continuations already requested for this feed: one that comes back again
+    /// would only bring the same videos once more
+    requested: std::collections::HashSet<String>,
     loading_more: bool,
     scroll: ListState,
     rows: Arc<Vec<FeedRow>>,
@@ -223,6 +238,7 @@ impl HomePage {
             chip,
             items: Load::Loading,
             continuation: None,
+            requested: Default::default(),
             loading_more: false,
             scroll: ListState::new(0, ListAlignment::Top, px(0.)),
             rows: Arc::default(),
@@ -236,6 +252,7 @@ impl HomePage {
     fn load(&mut self, cx: &mut Context<Self>) {
         self.items = Load::Loading;
         self.continuation = None;
+        self.requested.clear();
         self.loading_more = false;
         self.scroll.reset(0);
         self.rows = Arc::default();
@@ -353,7 +370,9 @@ impl HomePage {
                 }
                 crate::perf::mark("home feed fetched");
                 match res {
-                    Ok((items, cont)) => {
+                    Ok((page, cont)) => {
+                        let mut items = Vec::new();
+                        append_unique(&mut items, page);
                         if chip == 0 && !items.is_empty() {
                             save_home(&items);
                         }
@@ -375,7 +394,8 @@ impl HomePage {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        let Some(tok) = self.continuation.clone() else {
+        let Some(tok) = self.continuation.clone().filter(|t| self.requested.insert(t.clone())) else {
+            self.continuation = None;
             self.loading_more = false;
             return;
         };
@@ -404,9 +424,9 @@ impl HomePage {
                 this.loading_more = false;
                 if let Ok(p) = res {
                     if let Some(items) = this.items.ready_mut() {
-                        Arc::make_mut(items).extend(p.items);
+                        append_unique(Arc::make_mut(items), p.items);
                     }
-                    this.continuation = p.continuation;
+                    this.continuation = p.continuation.filter(|c| !this.requested.contains(c));
                 } else {
                     this.continuation = None;
                 }
@@ -525,5 +545,33 @@ impl Render for HomePage {
             .flex_col()
             .child(chips.overflow_hidden())
             .child(scroll_viewport("home-scroll", &self.scroll, body, window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_unique;
+    use crate::api::types::{Item, VideoItem};
+
+    fn video(id: &str) -> Item {
+        Item::Video(VideoItem { id: id.into(), ..Default::default() })
+    }
+
+    fn ids(items: &[Item]) -> Vec<String> {
+        items.iter().filter_map(|i| i.as_video()).map(|v| v.id.clone()).collect()
+    }
+
+    #[test]
+    fn next_page_leaves_out_videos_already_in_the_feed() {
+        let mut feed = vec![video("a"), video("b"), video("c")];
+        append_unique(&mut feed, vec![video("c"), video("d"), video("a"), video("d"), video("e")]);
+        assert_eq!(ids(&feed), ["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn first_page_loses_its_own_repeats() {
+        let mut feed = Vec::new();
+        append_unique(&mut feed, vec![video("x"), video("x"), video("y")]);
+        assert_eq!(ids(&feed), ["x", "y"]);
     }
 }
