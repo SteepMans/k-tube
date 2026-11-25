@@ -172,7 +172,12 @@ fn feed_rows(items: &[Item], settings: &store::Settings, columns: usize, width: 
     let mut shorts = Vec::new();
     for (index, item) in items.iter().enumerate() {
         if let Item::Video(video) = item {
-            if store::is_filtered(video, settings) || (settings.hide_watched_in_feed && is_watched(&video.id, cx)) {
+            // watched to the end or marked as watched: Home only offers what's new;
+            // started videos stay, with their progress bar
+            if store::is_filtered(video, settings)
+                || is_finished(&video.id, cx)
+                || (settings.hide_watched_in_feed && is_watched(&video.id, cx))
+            {
                 continue;
             }
             if video.is_short {
