@@ -750,6 +750,41 @@ pub fn history_merge_remote(v: &VideoItem, progress: f64, duration: f64, watched
     !existed
 }
 
+/// Marks a video as watched (position at the end) or unwatched (position back to the
+/// start) in the history, adding the entry when the video was never opened.
+/// Returns the stored (progress, duration), or None while the history is paused.
+pub fn history_set_watched(v: &VideoItem, watched: bool) -> Option<(f64, f64)> {
+    if !settings_snapshot().history_enabled {
+        return None;
+    }
+    let conn = db().lock();
+    if !watched {
+        let _ = conn.execute("UPDATE history SET progress=0 WHERE video_id=?1", [&v.id]);
+        let d = conn
+            .query_row("SELECT duration FROM history WHERE video_id=?1", [&v.id], |r| r.get::<_, f64>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(0.0);
+        return Some((0.0, d));
+    }
+    let known = conn
+        .query_row("SELECT duration FROM history WHERE video_id=?1", [&v.id], |r| r.get::<_, f64>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+    // without a known length the bar only needs progress == duration
+    let d = if known > 0.0 { known } else { v.duration_secs.filter(|d| *d > 0).map(|d| d as f64).unwrap_or(1.0) };
+    let j = serde_json::to_string(v).ok()?;
+    let _ = conn.execute(
+        "INSERT INTO history(video_id, json, watched_at, progress, duration) VALUES (?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT(video_id) DO UPDATE SET progress=excluded.progress, duration=excluded.duration",
+        params![v.id, j, crate::api::json::now(), d],
+    );
+    Some((d, d))
+}
+
 pub fn history_remove(video_id: &str) {
     let _ = db().lock().execute("DELETE FROM history WHERE video_id=?1", [video_id]);
 }

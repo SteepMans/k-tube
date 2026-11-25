@@ -777,7 +777,7 @@ impl WatchPage {
                             }))
                             .child(
                                 pill("w-more", Some("ellipsis"), "", cx).w_9().px_0().justify_center().on_click(move |ev, window, cx| {
-                                    open_menu(ev.position(), video_menu_items(&v_more), window, cx);
+                                    open_menu(ev.position(), video_menu_items(&v_more, cx), window, cx);
                                 }),
                             ),
                     ),

@@ -22,6 +22,13 @@ pub fn watched_progress(id: &str, cx: &App) -> Option<f32> {
     }
 }
 
+/// Watched to the end (or marked so): the bar is full and the thumbnail dimmed.
+pub fn is_finished(id: &str, cx: &App) -> bool {
+    watched_progress(id, cx).is_some_and(|p| p >= FINISHED)
+}
+
+const FINISHED: f32 = 0.95;
+
 pub fn is_watched(id: &str, cx: &App) -> bool {
     cx.try_global::<Watched>().map(|w| w.0.contains_key(id)).unwrap_or(false)
 }
@@ -118,6 +125,7 @@ fn badge(v: &VideoItem, cx: &App) -> Option<AnyElement> {
 pub fn thumbnail(v: &VideoItem, url: String, w: Pixels, h: Pixels, radius: Pixels, cx: &App) -> Div {
     let p = pal(cx);
     let progress = watched_progress(&v.id, cx);
+    let finished = progress.is_some_and(|p| p >= FINISHED);
     div()
         .relative()
         .w(w)
@@ -131,6 +139,8 @@ pub fn thumbnail(v: &VideoItem, url: String, w: Pixels, h: Pixels, radius: Pixel
         // the card and shows top-aligned with the bottom cut off
         .child(img(SharedString::from(url)).size_full().aspect_ratio(w / h).object_fit(ObjectFit::Cover))
         .child(crate::player::preview::slot_marker(&v.id, cx))
+        // watched to the end: slightly dimmed, as on YouTube
+        .when(finished, |d| d.child(div().absolute().top_0().left_0().size_full().bg(hsla(0., 0., 0., 0.35))))
         .children(badge(v, cx))
         .when_some(progress.filter(|p| *p > 0.01), |d, pr| {
             d.child(
@@ -146,7 +156,7 @@ pub fn thumbnail(v: &VideoItem, url: String, w: Pixels, h: Pixels, radius: Pixel
         })
 }
 
-pub fn video_menu_items(v: &VideoItem) -> Vec<MenuItem> {
+pub fn video_menu_items(v: &VideoItem, cx: &App) -> Vec<MenuItem> {
     let mut items = Vec::new();
     {
         let route = if v.is_short { Route::Shorts(Some(v.id.clone())) } else { Route::Watch { id: v.id.clone(), playlist: None, start: None } };
@@ -178,6 +188,12 @@ pub fn video_menu_items(v: &VideoItem) -> Vec<MenuItem> {
     items.push(MenuItem::new("external-link", "Open in external player", move |_, cx| {
         crate::downloads::open_external(&v5.id, cx);
     }));
+    {
+        let finished = is_finished(&v.id, cx);
+        let v6 = v.clone();
+        let (icon_name, label) = if finished { ("rotate-ccw", "Mark as unwatched") } else { ("circle-check", "Mark as watched") };
+        items.push(MenuItem::new(icon_name, label, move |_, cx| set_watched(&v6, !finished, cx)));
+    }
     let id = v.id.clone();
     items.push(MenuItem::new("link", "Copy link", move |_, cx| {
         copy_to_clipboard(format!("https://www.youtube.com/watch?v={id}"), cx);
@@ -210,6 +226,19 @@ pub fn video_menu_items(v: &VideoItem) -> Vec<MenuItem> {
     items
 }
 
+/// Marks the video watched (progress bar full) or unwatched (no bar). Kept in the
+/// local watch history, so it survives a restart.
+pub fn set_watched(v: &VideoItem, watched: bool, cx: &mut App) {
+    match store::history_set_watched(v, watched) {
+        Some(pd) => {
+            cx.default_global::<Watched>().0.insert(v.id.clone(), pd);
+            toast(cx, if watched { "Marked as watched" } else { "Marked as unwatched" });
+        }
+        None => toast(cx, "Watch history is paused. Turn it on in Library to mark videos"),
+    }
+    cx.refresh_windows();
+}
+
 fn is_watched_in_history(id: &str) -> bool {
     store::progress_map().contains_key(id)
 }
@@ -231,7 +260,7 @@ fn more_button(id: SharedString, v: &VideoItem, cx: &App) -> Stateful<Div> {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |ev, window, cx| {
             cx.stop_propagation();
-            open_menu(ev.position(), video_menu_items(&v), window, cx);
+            open_menu(ev.position(), video_menu_items(&v, cx), window, cx);
         })
 }
 
