@@ -60,6 +60,9 @@ pub struct Player {
     pub storyboard: Option<Storyboard>,
     last_prop_notify: std::time::Instant,
     fallback_tried: bool,
+    /// a live stream that stopped is being opened again: (attempts in a row, last attempt)
+    live_retry: Option<(u32, std::time::Instant)>,
+    live_reconnecting: bool,
     pub channel_id: Option<String>,
     pub last_activity: std::time::Instant,
     pub audio_track: Option<String>,
@@ -144,6 +147,8 @@ impl Player {
             storyboard: None,
             last_prop_notify: std::time::Instant::now(),
             fallback_tried: false,
+            live_retry: None,
+            live_reconnecting: false,
             channel_id: None,
             last_activity: std::time::Instant::now(),
             audio_track: None,
@@ -289,6 +294,7 @@ impl Player {
             MpvEvent::FileLoaded => {
                 self.loading = false;
                 self.eof = false;
+                self.live_reconnecting = false;
                 self.apply_caption();
                 cx.emit(PlayerEvent::Loaded);
                 cx.notify();
@@ -355,6 +361,11 @@ impl Player {
     }
 
     fn on_ended(&mut self, cx: &mut Context<Self>) {
+        // a live stream has no end while it airs: its playlist failed or stalled
+        if self.streams.as_ref().is_some_and(|s| s.is_live) {
+            self.reconnect_live(cx);
+            return;
+        }
         self.save_progress(true);
         if self.loop_video {
             self.seek_to(0.0);
@@ -488,6 +499,8 @@ impl Player {
         };
         self.load_serial += 1;
         self.fallback_tried = false;
+        self.live_retry = None;
+        self.live_reconnecting = false;
         let serial = self.load_serial;
         self.video = Some(video.clone());
         self.loading = true;
@@ -618,6 +631,57 @@ impl Player {
                     p.annotations = Arc::new(list);
                     cx.notify();
                 }
+            });
+        })
+        .detach();
+    }
+
+    /// A live stream stopped (mpv reached the end of what it could load): resolve it
+    /// again and continue from the live edge. A few attempts in a row, then an error
+    /// with Retry; the count starts over once the stream has played for two minutes.
+    fn reconnect_live(&mut self, cx: &mut Context<Self>) {
+        if self.live_reconnecting {
+            return;
+        }
+        let Some(id) = self.video.as_ref().map(|v| v.id.clone()) else { return };
+        let attempt = match self.live_retry {
+            Some((n, at)) if at.elapsed() < std::time::Duration::from_secs(120) => n + 1,
+            _ => 1,
+        };
+        self.live_retry = Some((attempt, std::time::Instant::now()));
+        if attempt > 5 {
+            self.loading = false;
+            self.error = Some("The live stream stopped. Retry to reconnect".into());
+            cx.notify();
+            return;
+        }
+        if crate::perf::on() {
+            eprintln!("[live] {id}: stream stopped, reconnecting (attempt {attempt})");
+        }
+        self.live_reconnecting = true;
+        self.loading = true;
+        self.eof = false;
+        streams::invalidate(&id);
+        let serial = self.load_serial;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(500 * attempt as u64)).await;
+            let res = blocking(move || streams::get_streams(&id)).await;
+            let _ = this.update(cx, |p, cx| {
+                if p.load_serial != serial {
+                    return;
+                }
+                match res {
+                    Ok(info) => {
+                        p.streams = Some(Arc::new(info));
+                        p.load_current(None, false, cx);
+                    }
+                    Err(e) => {
+                        p.live_reconnecting = false;
+                        p.loading = false;
+                        p.error = Some(format!("The live stream stopped: {e}"));
+                    }
+                }
+                cx.notify();
             });
         })
         .detach();
