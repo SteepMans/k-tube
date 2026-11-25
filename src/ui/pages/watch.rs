@@ -468,6 +468,10 @@ impl WatchPage {
     }
 
     fn on_ended(&mut self, cx: &mut Context<Self>) {
+        // a live stream doesn't end while it airs (the player reconnects): no "Up next"
+        if player(cx).read(cx).streams.as_ref().is_some_and(|s| s.is_live) {
+            return;
+        }
         let s = store::settings_snapshot();
         let next = cx.global::<AutoplayNext>().0.clone().filter(|_| s.autoplay_next);
         let looping = player(cx).read(cx).loop_video;
@@ -480,10 +484,16 @@ impl WatchPage {
             return;
         }
         if let Some(v) = next {
+            // the end is reported more than once (end of file and eof-reached): one "Up next"
+            static PENDING: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+            if PENDING.lock().replace(v.id.clone()).as_deref() == Some(v.id.as_str()) {
+                return;
+            }
             toast(cx, format!("Up next: {}", v.title));
             let id = v.id.clone();
             cx.spawn(async move |_, cx| {
                 cx.background_executor().timer(std::time::Duration::from_millis(1500)).await;
+                PENDING.lock().take();
                 let _ = cx.update(|cx| {
                     let still_ended = player(cx).read(cx).eof;
                     if still_ended {

@@ -92,6 +92,9 @@ impl PreviewCache {
 struct Proxy {
     port: u16,
     streams: Mutex<HashMap<u64, Entry>>,
+    /// (url, kind) -> id of plain entries, so a live playlist reloaded every few
+    /// seconds gets the same ids for the segments it lists again
+    ids: Mutex<HashMap<(String, String), u64>>,
     next: Mutex<u64>,
 }
 
@@ -110,7 +113,7 @@ fn proxy() -> Option<&'static Proxy> {
                 }
             })
             .ok()?;
-        Some(Proxy { port, streams: Mutex::new(HashMap::new()), next: Mutex::new(0) })
+        Some(Proxy { port, streams: Mutex::new(HashMap::new()), ids: Mutex::new(HashMap::new()), next: Mutex::new(0) })
     })
     .as_ref()
 }
@@ -124,19 +127,32 @@ fn register(p: &Proxy, url: &str, len: Option<u64>, mime: &str) -> u64 {
 }
 
 fn register_entry(p: &Proxy, url: &str, len: Option<u64>, mime: &str, preview: Option<(String, u64)>) -> u64 {
+    // the same URL again (a live playlist lists its segments on every reload): same id
+    let key = (url.to_string(), mime.to_string());
+    let mut s = p.streams.lock();
+    let mut ids = p.ids.lock();
+    if preview.is_none() {
+        if let Some(id) = ids.get(&key).copied().filter(|id| s.contains_key(id)) {
+            return id;
+        }
+    }
     let id = {
         let mut n = p.next.lock();
         *n += 1;
         *n
     };
-    let mut s = p.streams.lock();
     // keep the table bounded: old entries belong to videos no longer playing.
-    // HLS registers one entry per segment, so the window is generous.
+    // HLS registers one entry per segment, so the window is generous. Playlists
+    // stay: a live one is reloaded by the same id for as long as it plays.
     if s.len() > 20_000 {
         let min_keep = id.saturating_sub(10_000);
-        s.retain(|k, _| *k >= min_keep);
+        s.retain(|k, e| *k >= min_keep || e.mime == HLS);
+        ids.retain(|_, id| s.contains_key(id));
     }
-    s.insert(id, Entry { url: url.to_string(), len, mime: mime.to_string(), preview });
+    s.insert(id, Entry { url: url.to_string(), len, mime: mime.to_string(), preview: preview.clone() });
+    if preview.is_none() {
+        ids.insert(key, id);
+    }
     id
 }
 
@@ -529,7 +545,11 @@ fn rewrite_playlist(p: &Proxy, text: &str, max_height: u32) -> String {
 }
 
 fn serve_playlist(conn: &mut TcpStream, p: &Proxy, url: &str, max_height: u32, audio: Option<&str>, video_only: bool) -> std::io::Result<()> {
-    let mut text = warm_get(url).map(|b| String::from_utf8_lossy(&b.data).into_owned());
+    // from memory only what never changes: a master playlist or a finished (VOD) one.
+    // A live media playlist grows with every reload, a stored copy would end it.
+    let mut text = warm_get(url)
+        .map(|b| String::from_utf8_lossy(&b.data).into_owned())
+        .filter(|t| t.contains("#EXT-X-STREAM-INF") || t.contains("#EXT-X-ENDLIST"));
     for attempt in 0..3u64 {
         if text.is_some() {
             break;
@@ -865,6 +885,22 @@ mod preview_cache_tests {
         let media = "#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MAP:URI=\"https://a/init\"\n#EXTINF:5,\nhttps://a/s1\n#EXTINF:5,\nhttps://a/s2\n#EXTINF:5,\nhttps://a/s3\n";
         assert_eq!(first_media(media, 2), vec!["https://a/init", "https://a/s1", "https://a/s2"]);
         assert!(first_media("#EXTM3U\n#EXT-X-BYTERANGE:100@0\nhttps://a/f\n", 2).is_empty());
+    }
+
+    #[test]
+    fn live_reloads_keep_ids() {
+        let p = Proxy { port: 0, streams: Mutex::new(HashMap::new()), ids: Mutex::new(HashMap::new()), next: Mutex::new(0) };
+        let pl = register(&p, "https://a/live.m3u8", None, HLS);
+        let s1 = register(&p, "https://a/sq/1", None, PASS);
+        // a reload lists the same segment again: same id, no new entry
+        assert_eq!(register(&p, "https://a/sq/1", None, PASS), s1);
+        // many segments later the playlist is still there
+        for i in 0..25_000 {
+            register(&p, &format!("https://a/sq/x{i}"), None, PASS);
+        }
+        assert!(p.streams.lock().contains_key(&pl));
+        assert!(p.streams.lock().len() <= 20_001);
+        assert_eq!(register(&p, "https://a/live.m3u8", None, HLS), pl);
     }
 
     #[test]
