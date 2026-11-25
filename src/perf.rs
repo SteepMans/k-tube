@@ -54,3 +54,21 @@ pub fn mark(what: &str) {
         eprintln!("[startup] {:>6.1} ms  {what}", t0.elapsed().as_secs_f64() * 1000.0);
     }
 }
+
+/// Hover preview timeline (with STREAMTUBE_PERF set): milliseconds since the pointer
+/// came onto the thumbnail, at each step up to the first frame.
+pub fn preview_mark(what: &str) {
+    if on() {
+        let t0 = *PREVIEW_T0.lock();
+        let ms = t0.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(-1.0);
+        eprintln!("[preview] {ms:>7.1} ms  {what}");
+    }
+}
+
+pub fn preview_start() {
+    if on() {
+        *PREVIEW_T0.lock() = Some(Instant::now());
+    }
+}
+
+static PREVIEW_T0: parking_lot::Mutex<Option<Instant>> = parking_lot::Mutex::new(None);
