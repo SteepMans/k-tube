@@ -63,6 +63,10 @@ jobs:
   build:
     needs: merge
     if: needs.merge.outputs.branch != ''
+    # build.yml declares a release job with contents: write (it is skipped here, but a called
+    # workflow may not ask for more than its caller allows, or the run does not start at all)
+    permissions:
+      contents: write
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ needs.merge.outputs.branch }}
