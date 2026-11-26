@@ -31,6 +31,18 @@ fn freshen(items: Vec<Item>) -> Vec<Item> {
     fresh
 }
 
+/// Adds a page to the feed, leaving out videos the feed already has. YouTube's
+/// next pages repeat videos of the earlier ones, and a feed kept from the last
+/// session goes on with the pages of the newly loaded one.
+fn append_unique(items: &mut Vec<Item>, page: Vec<Item>) {
+    let mut seen: std::collections::HashSet<String> =
+        items.iter().filter_map(|i| if let Item::Video(v) = i { Some(v.id.clone()) } else { None }).collect();
+    items.extend(page.into_iter().filter(|i| match i {
+        Item::Video(v) => seen.insert(v.id.clone()),
+        _ => true,
+    }));
+}
+
 /// Where the home feed comes from, so a cached feed is only shown for the same source.
 fn feed_source() -> &'static str {
     if crate::api::web::connected() {
@@ -135,6 +147,9 @@ pub struct HomePage {
     chip: usize,
     items: Load<Arc<Vec<Item>>>,
     continuation: Option<String>,
+    /// continuations already requested for this feed: one that comes back again
+    /// would only bring the same videos once more
+    requested: std::collections::HashSet<String>,
     loading_more: bool,
     scroll: ListState,
     rows: Arc<Vec<FeedRow>>,
@@ -157,7 +172,12 @@ fn feed_rows(items: &[Item], settings: &store::Settings, columns: usize, width: 
     let mut shorts = Vec::new();
     for (index, item) in items.iter().enumerate() {
         if let Item::Video(video) = item {
-            if store::is_filtered(video, settings) || (settings.hide_watched_in_feed && is_watched(&video.id, cx)) {
+            // watched to the end or marked as watched: Home only offers what's new;
+            // started videos stay, with their progress bar
+            if store::is_filtered(video, settings)
+                || is_finished(&video.id, cx)
+                || (settings.hide_watched_in_feed && is_watched(&video.id, cx))
+            {
                 continue;
             }
             if video.is_short {
@@ -193,10 +213,17 @@ fn feed_rows(items: &[Item], settings: &store::Settings, columns: usize, width: 
     rows
 }
 
+/// A card under an id of its place in the feed. The card's own ids come from the
+/// video, and two elements with one id share their click state: of two cards of one
+/// video on screen, the lower one's menu (⋮) and click did nothing.
+fn feed_cell(index: usize, card: AnyElement) -> AnyElement {
+    div().id(("feed-cell", index)).flex_none().child(card).into_any_element()
+}
+
 fn render_feed_row(row: &FeedRow, items: &[Item], card_width: Pixels, cx: &mut App) -> AnyElement {
     match row {
         FeedRow::Cards { indices, gap } => grid(
-            indices.iter().map(|&index| grid_item(&items[index], card_width, true, cx)).collect(),
+            indices.iter().map(|&index| feed_cell(index, grid_item(&items[index], card_width, true, cx))).collect(),
             card_width,
         ).flex_nowrap().pb(*gap).into_any_element(),
         FeedRow::Shorts { indices, gap } => {
@@ -209,7 +236,10 @@ fn render_feed_row(row: &FeedRow, items: &[Item], card_width: Pixels, cx: &mut A
                 .pb(*gap)
                 .child(div().flex().items_center().gap_2().child(icon("zap").text_color(p.accent)).child(section_title("Shorts", cx)))
                 .child(div().flex().gap_4().overflow_hidden().children(
-                    indices.iter().filter_map(|&index| items[index].as_video()).map(|video| shorts_card(video, px(200.), cx)),
+                    indices
+                        .iter()
+                        .filter_map(|&index| Some((index, items[index].as_video()?)))
+                        .map(|(index, video)| feed_cell(index, shorts_card(video, px(200.), cx))),
                 ))
                 .into_any_element()
         }
@@ -223,6 +253,7 @@ impl HomePage {
             chip,
             items: Load::Loading,
             continuation: None,
+            requested: Default::default(),
             loading_more: false,
             scroll: ListState::new(0, ListAlignment::Top, px(0.)),
             rows: Arc::default(),
@@ -236,6 +267,7 @@ impl HomePage {
     fn load(&mut self, cx: &mut Context<Self>) {
         self.items = Load::Loading;
         self.continuation = None;
+        self.requested.clear();
         self.loading_more = false;
         self.scroll.reset(0);
         self.rows = Arc::default();
@@ -353,7 +385,9 @@ impl HomePage {
                 }
                 crate::perf::mark("home feed fetched");
                 match res {
-                    Ok((items, cont)) => {
+                    Ok((page, cont)) => {
+                        let mut items = Vec::new();
+                        append_unique(&mut items, page);
                         if chip == 0 && !items.is_empty() {
                             save_home(&items);
                         }
@@ -375,7 +409,8 @@ impl HomePage {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        let Some(tok) = self.continuation.clone() else {
+        let Some(tok) = self.continuation.clone().filter(|t| self.requested.insert(t.clone())) else {
+            self.continuation = None;
             self.loading_more = false;
             return;
         };
@@ -404,9 +439,9 @@ impl HomePage {
                 this.loading_more = false;
                 if let Ok(p) = res {
                     if let Some(items) = this.items.ready_mut() {
-                        Arc::make_mut(items).extend(p.items);
+                        append_unique(Arc::make_mut(items), p.items);
                     }
-                    this.continuation = p.continuation;
+                    this.continuation = p.continuation.filter(|c| !this.requested.contains(c));
                 } else {
                     this.continuation = None;
                 }
@@ -525,5 +560,33 @@ impl Render for HomePage {
             .flex_col()
             .child(chips.overflow_hidden())
             .child(scroll_viewport("home-scroll", &self.scroll, body, window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_unique;
+    use crate::api::types::{Item, VideoItem};
+
+    fn video(id: &str) -> Item {
+        Item::Video(VideoItem { id: id.into(), ..Default::default() })
+    }
+
+    fn ids(items: &[Item]) -> Vec<String> {
+        items.iter().filter_map(|i| i.as_video()).map(|v| v.id.clone()).collect()
+    }
+
+    #[test]
+    fn next_page_leaves_out_videos_already_in_the_feed() {
+        let mut feed = vec![video("a"), video("b"), video("c")];
+        append_unique(&mut feed, vec![video("c"), video("d"), video("a"), video("d"), video("e")]);
+        assert_eq!(ids(&feed), ["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn first_page_loses_its_own_repeats() {
+        let mut feed = Vec::new();
+        append_unique(&mut feed, vec![video("x"), video("x"), video("y")]);
+        assert_eq!(ids(&feed), ["x", "y"]);
     }
 }
